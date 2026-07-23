@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly ROOT_DIR
 readonly COMPOSE=(
     docker compose --project-name cvat
     -f "$ROOT_DIR/docker-compose.yml"
