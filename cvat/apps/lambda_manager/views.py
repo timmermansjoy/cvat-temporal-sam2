@@ -529,7 +529,7 @@ class LambdaFunction:
             if max_distance:
                 payload.update({"max_distance": max_distance})
         elif self.kind == FunctionKind.TRACKER:
-            signer = TimestampSigner(salt=f"cvat-tracker-state:{self.id}")
+            signer = TimestampSigner(salt=f"cvat-tracker-state:{self.id}:{db_task.id}")
 
             def prepare_shape(shape):
                 if shape is None:

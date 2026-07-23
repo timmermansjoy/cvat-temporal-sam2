@@ -974,6 +974,30 @@ class LambdaTestCases(_LambdaTestCaseBase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Invalid or expired tracker state", response.content.decode("UTF-8"))
 
+    def test_api_v2_lambda_functions_create_tracker_state_from_another_task(self):
+        response = self._post_request(
+            f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker}",
+            self.admin,
+            data={
+                "task": self.main_task["id"],
+                "frame": 0,
+                "shapes": [{"type": "rectangle", "points": [12.12, 34.45, 54.0, 76.12]}],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self._post_request(
+            f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker}",
+            self.admin,
+            data={
+                "task": self.assigneed_to_user_task["id"],
+                "frame": 1,
+                "states": response.json()["states"],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid or expired tracker state", response.content.decode("UTF-8"))
+
     def test_api_v2_lambda_functions_create_tracker_unsupported_shape_type(self):
         for id_func in [
             id_function_tracker,

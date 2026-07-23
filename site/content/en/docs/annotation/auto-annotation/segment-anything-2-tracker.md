@@ -1,25 +1,25 @@
 ---
-title: 'Segment Anything 2 Tracker'
-linkTitle: 'Segment Anything 2 Tracker'
+title: 'Segment Anything 2.1 Tracker'
+linkTitle: 'Segment Anything 2.1 Tracker'
 weight: 2
-description: 'Accelerating video labeling using SAM2 model'
+description: 'Accelerating video labeling using the SAM2.1 model'
 aliases:
   - /docs/enterprise/segment-anything-2-tracker/
 ---
 
 ## Overview
 
-Segment Anything 2 is a segmentation model that allows fast and precise selection of any object in videos or images.
-SAM2 tracking is available in two implementations:
+Segment Anything 2.1 is a segmentation model that allows fast and precise selection of any object in videos or images.
+SAM2.1 tracking is available in two implementations:
 
-1. **Nuclio SAM2 Tracker**: Available only for Enterprise deployments.
-This is implemented as a serverless function deployed via Nuclio framework.
+1. **Nuclio SAM2.1 Tracker**: Available for Community self-hosted deployments.
+This is implemented as a serverless function deployed via the Nuclio framework.
 
 1. **AI Agent SAM2 Tracker**: Available for CVAT Online and Enterprise via auto-annotation (AA) functions
 that run on user-side agents. This brings SAM2 tracking capabilities to CVAT Online users who previously
 couldn't access this feature.
 
-It is strongly recommended to deploy the model using a GPU. Although it is possible to use a CPU-based version,
+It is strongly recommended to deploy the Nuclio model using a GPU. Although it is possible to use a CPU-based version,
 it generally performs much slower and is suitable only for handling a single parallel request.
 The AI agent variant runs on user hardware, providing flexibility for GPU usage without
 server configuration requirements.
@@ -31,32 +31,29 @@ to existing objects (polygons and masks) to track them forward for a specified n
 
 Choose the installation method based on your platform and deployment needs.
 
-{{% alert title="Note" color="primary" %}}
-Nuclio SAM2 Tracker is only available in the Enterprise version.
-The AI agent variant brings SAM2 tracking to CVAT Online and Enterprise.
-{{% /alert %}}
+The Community annotation action is registered automatically when the Nuclio function is deployed.
 
-{{% alert title="Note" color="primary" %}}
-Both tracker implementations require the enhanced actions UI plugin, which is enabled by default.
-Usually, no additional steps are necessary on this.
-{{% /alert %}}
-
-### Nuclio SAM2 Tracker (CVAT Enterprise)
+### Nuclio SAM2.1 Tracker (Community self-hosted)
 
 #### Docker
 
-You can use existing scripts from the community repository
-(`./serverless/deploy_cpu.sh` or `./serverless/deploy_gpu.sh`).
-To deploy the feature, simply run:
+From the CVAT repository root, deploy the GPU function with:
 
 ```sh
-./serverless/deploy_gpu.sh "path/to/the/function"
+./serverless/deploy_gpu.sh serverless/pytorch/facebookresearch/sam2/nuclio
 ```
+
+GPU deployment is strongly recommended. CPU deployment is supported but is much slower and suitable only for a
+single parallel request.
+
+The tracker requires Redis to store its state between frames. The deployment script configures the function to use
+CVAT's Redis state store. Each tracking state expires eight hours after it is created or last updated, so tracking
+must finish before the state expires.
 
 #### Kubernetes
 
 - You need to deploy the Nuclio function manually.
-Note that this function requires a Redis storage configured to keep the tracking state.
+Note that this function requires Redis storage configured to keep the tracking state.
 You may use the same storage as `cvat_redis_ondisk` uses.
 When running the `nuclio deploy` command, make sure to provide the necessary arguments.
 The minimal command is:
@@ -138,23 +135,24 @@ If the agent stops, active tracking operations will fail and need to be restarte
 ## Version Requirements
 
 - **AI Agent SAM2 Tracker**: Requires CVAT version 2.42.0 or later
-- **Classic SAM2 Tracker**: Available in all Enterprise versions
+- **Nuclio SAM2.1 Tracker**: Available in Community self-hosted deployments
 - **GPU Support**: Optional but recommended for both implementations
 
 ## Usage
 
 Both SAM2 tracker implementations provide similar user experiences with slight differences in the UI labels.
 
-### Running the Nuclio SAM2 Tracker
+### Running the Nuclio SAM2.1 Tracker
 
-The nuclio tracker can be applied to any polygons and masks.
+The Nuclio tracker can be applied to polygons and masks. Use the existing Segment Anything (SAM) interactor to
+create a seed polygon or mask, if needed.
 To run the tracker on an object, open the object menu and click
 **Run annotation action**.
 
 <img src="/images/sam2_tracker_run_shape_action.png" style="max-width: 200px; padding: 16px;">
 
 Alternatively, you can use a hotkey: select the object and press **Ctrl + E** (default shortcut).
-When the modal opened, in "Select action" list, choose **Segment Anything 2: Tracker**:
+When the modal opens, choose **Segment Anything 2: Tracker** from **Select action**:
 
 <img src="/images/sam2_tracker_run_shape_action_modal.png" style="max-width: 500px; padding: 16px;">
 
@@ -239,6 +237,8 @@ The SAM2 tracker supports polygons and masks but not rectangles.
 - **Convert polygon shapes to tracks**: When enabled, all visible polygon shapes in the current frame will be converted
 to tracks before tracking begins. Use this option if you need tracks as the final output but started with shapes,
 produced for example by interactors (e.g. SAM2 or another one).
+
+Polygon seeds can become tracks when this option is enabled. Masks remain per-frame shapes.
 
 ## See Also
 

@@ -10,6 +10,7 @@ import {
 import {
     getCore, MLModel, RQStatus,
 } from 'cvat-core-wrapper';
+import SAM2TrackerAction, { SAM2_TRACKER_MODEL_ID } from 'utils/annotations-actions/sam2-tracker';
 
 export enum ModelsActionTypes {
     GET_MODELS = 'GET_MODELS',
@@ -101,6 +102,7 @@ export const modelsActions = {
 export type ModelsActions = ActionUnion<typeof modelsActions>;
 
 const core = getCore();
+let sam2ActionRegistered = false;
 
 export function getModelsAsync(query?: ModelsQuery): ThunkAction {
     return async (dispatch): Promise<void> => {
@@ -108,6 +110,16 @@ export function getModelsAsync(query?: ModelsQuery): ThunkAction {
         try {
             const result = await core.lambda.list();
             const { models, count } = result;
+            const sam2Model = models.find((model) => model.id === SAM2_TRACKER_MODEL_ID);
+            if (sam2Model && !sam2ActionRegistered) {
+                sam2ActionRegistered = true;
+                try {
+                    await core.actions.register(new SAM2TrackerAction(sam2Model));
+                } catch (error) {
+                    sam2ActionRegistered = false;
+                    throw error;
+                }
+            }
             dispatch(modelsActions.getModelsSuccess(models, count));
         } catch (error) {
             dispatch(modelsActions.getModelsFailed(error));
