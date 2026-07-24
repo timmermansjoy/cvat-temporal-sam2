@@ -1,0 +1,291 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "description": "Team activity and output for the selected tasks and time range. Working time uses CVAT's inactivity-aware send:working_time events.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hours worked"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "h"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Edits / 100 propagated"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "10.1.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "WITH\n  sumIf(if(duration > 0, toUInt64(duration), JSONExtractUInt(payload, 'working_time')), scope = 'send:working_time') AS worked_ms,\n  sumIf(toUInt64(ifNull(`count`, 1)), scope IN ('draw:object', 'paste:object', 'propagate:object')) + sumIf(JSONExtractUInt(payload, 'object_count'), scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS output_objects,\n  sumIf(toUInt64(ifNull(`count`, 1)), scope = 'propagate:object') + sumIf(JSONExtractUInt(payload, 'object_count'), scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS propagated_objects,\n  sumIf(toUInt64(ifNull(`count`, 1)), scope IN ('drag:object', 'resize:object', 'edit:mask')) AS object_edits\nSELECT\n  uniqExact(user_id) AS \"Active users\",\n  round(worked_ms / 3600000, 1) AS \"Hours worked\",\n  output_objects AS \"Output objects\",\n  round(output_objects * 3600000.0 / nullIf(worked_ms, 0), 1) AS \"Objects / hour\",\n  propagated_objects AS \"Propagated objects\",\n  round(object_edits * 100.0 / nullIf(propagated_objects, 0), 1) AS \"Edits / 100 propagated\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND user_id IS NOT NULL\n  AND scope IN ('send:working_time', 'draw:object', 'paste:object', 'propagate:object', 'drag:object', 'resize:object', 'edit:mask', 'run:sam2_inference')\n  AND (-1 IN (${tasks}) OR task_id IN (${tasks}))",
+          "refId": "A"
+        }
+      ],
+      "title": "Team overview",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "description": "Output includes drawn, pasted, traditionally propagated, and SAM2-tracked objects. Speed divides active working time by output. Edits count drag, resize, and auto-mask corrections; lower edit and delete rates indicate less rework.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "User"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Worked"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "h"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Seconds / object"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*\\/ 100 .*/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 2,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": [
+            "Worked",
+            "Output objects",
+            "Propagated",
+            "SAM2 runs",
+            "SAM2 frames"
+          ],
+          "reducer": [
+            "sum"
+          ],
+          "show": true
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Output objects"
+          }
+        ]
+      },
+      "pluginVersion": "10.1.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "WITH user_metrics AS (\n  SELECT\n    user_id,\n    coalesce(anyIf(user_name, user_name IS NOT NULL AND user_name != ''), concat('User #', toString(user_id))) AS user,\n    sumIf(if(duration > 0, toUInt64(duration), JSONExtractUInt(payload, 'working_time')), scope = 'send:working_time') AS worked_ms,\n    sumIf(toUInt64(ifNull(`count`, 1)), scope IN ('draw:object', 'paste:object', 'propagate:object')) + sumIf(JSONExtractUInt(payload, 'object_count'), scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS output_objects,\n    sumIf(toUInt64(ifNull(`count`, 1)), scope = 'propagate:object') + sumIf(JSONExtractUInt(payload, 'object_count'), scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS propagated_objects,\n    sumIf(toUInt64(ifNull(`count`, 1)), scope IN ('drag:object', 'resize:object', 'edit:mask')) AS object_edits,\n    sumIf(toUInt64(ifNull(`count`, 1)), scope = 'delete:object') AS deleted_objects,\n    countIf(scope = 'run:sam2_tracking' AND JSONExtractString(payload, 'outcome') = 'success') AS sam2_runs,\n    countIf(scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS sam2_frames,\n    uniqExactIf(job_id, job_id IS NOT NULL) AS jobs\n  FROM events\n  WHERE $__timeFilter(timestamp)\n    AND user_id IS NOT NULL\n    AND scope IN ('send:working_time', 'draw:object', 'paste:object', 'propagate:object', 'drag:object', 'resize:object', 'edit:mask', 'delete:object', 'run:sam2_tracking', 'run:sam2_inference')\n    AND (-1 IN (${tasks}) OR task_id IN (${tasks}))\n  GROUP BY user_id\n)\nSELECT\n  user AS User,\n  round(worked_ms / 3600000, 2) AS Worked,\n  output_objects AS \"Output objects\",\n  round(output_objects * 3600000.0 / nullIf(worked_ms, 0), 1) AS \"Objects / hour\",\n  round(worked_ms / 1000.0 / nullIf(output_objects, 0), 1) AS \"Seconds / object\",\n  propagated_objects AS Propagated,\n  round(object_edits * 100.0 / nullIf(propagated_objects, 0), 1) AS \"Edits / 100 propagated\",\n  round(deleted_objects * 100.0 / nullIf(output_objects, 0), 1) AS \"Deletes / 100 objects\",\n  sam2_runs AS \"SAM2 runs\",\n  sam2_frames AS \"SAM2 frames\",\n  jobs AS Jobs\nFROM user_metrics\nWHERE worked_ms > 0 OR output_objects > 0 OR sam2_runs > 0\nORDER BY output_objects DESC, worked_ms DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "User scoreboard",
+      "type": "table"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": [
+    "annotations",
+    "productivity",
+    "users"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": "-1",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "PDEE91DDB90597936"
+        },
+        "definition": "SELECT\n  task_id AS __value,\n  concat('Task #', toString(task_id)) AS __text\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND task_id IS NOT NULL\nGROUP BY task_id\nORDER BY task_id DESC",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Task",
+        "multi": true,
+        "name": "tasks",
+        "options": [],
+        "query": "SELECT\n  task_id AS __value,\n  concat('Task #', toString(task_id)) AS __text\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND task_id IS NOT NULL\nGROUP BY task_id\nORDER BY task_id DESC",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Annotation User Scoreboard",
+  "uid": "annotation-user-scoreboard",
+  "version": 1,
+  "weekStart": ""
+}
