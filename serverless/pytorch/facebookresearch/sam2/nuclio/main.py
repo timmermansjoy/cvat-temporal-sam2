@@ -30,6 +30,7 @@ STATE_TTL_SECONDS = 8 * 60 * 60
 LOCK_TTL_SECONDS = 10 * 60
 LOCK_WAIT_SECONDS = 30
 MAX_IMAGE_PIXELS = 100_000_000
+MAX_BATCH_SIZE = 10
 STATE_KEY_PREFIX = "cvat:sam2:state:"
 
 
@@ -235,7 +236,9 @@ class ModelHandler:
                 torch.backends.cudnn.allow_tf32 = True
 
         self.predictor = SAM2VideoPredictor.from_pretrained(
-            MODEL_ID, device=self.device
+            MODEL_ID,
+            device=self.device,
+            vos_optimized=self.device.type == "cuda",
         )
         self.image_predictor = SAM2ImagePredictor(self.predictor)
         self.transform = torchvision.transforms.Compose(
@@ -255,7 +258,9 @@ class ModelHandler:
         started_at = time.perf_counter()
         image = image.convert("RGB")
         image_tensor = self.transform(image).unsqueeze(0)
-        timing["preprocess_cpu_ms"] = _elapsed_ms(started_at)
+        timing["preprocess_cpu_ms"] = round(
+            timing.get("preprocess_cpu_ms", 0) + _elapsed_ms(started_at), 3
+        )
         if timing_events:
             timing_events[0].record()
         image_tensor = image_tensor.to(device=self.device)
@@ -529,8 +534,7 @@ class StateStore:
                     lock.release()
 
 
-def _decode_image(data):
-    encoded = data.get("image")
+def _decode_image(encoded):
     if not isinstance(encoded, str):
         raise RequestError("image must be a base64 string")
     try:
@@ -548,6 +552,42 @@ def _decode_image(data):
     except OSError as error:
         raise RequestError("image is not valid image data") from error
     return image.convert("RGB")
+
+
+def _decode_images(data):
+    if "images" not in data:
+        return [_decode_image(data.get("image"))]
+
+    encoded_images = data["images"]
+    if (
+        not isinstance(encoded_images, list)
+        or not encoded_images
+        or len(encoded_images) > MAX_BATCH_SIZE
+    ):
+        raise RequestError(
+            f"images must contain between 1 and {MAX_BATCH_SIZE} images"
+        )
+    images = []
+    total_pixels = 0
+    for encoded in encoded_images:
+        image = _decode_image(encoded)
+        total_pixels += image.width * image.height
+        if total_pixels > MAX_IMAGE_PIXELS:
+            raise RequestError("tracking batch image dimensions are too large")
+        images.append(image)
+    dimensions = {(image.width, image.height) for image in images}
+    if len(dimensions) != 1:
+        raise RequestError("all images in a tracking batch must have the same dimensions")
+    return images
+
+
+def _finish_timing(timing, request_started_at, batch_size):
+    timing["server_total_ms"] = _elapsed_ms(request_started_at)
+    if batch_size > 1:
+        for key, value in timing.items():
+            if key.endswith("_ms"):
+                timing[key] = round(value / batch_size, 3)
+    timing["batch_size"] = batch_size
 
 
 def _response(context, body, status_code=200):
@@ -574,9 +614,13 @@ def handler(context, event):
         if not isinstance(data, dict):
             raise RequestError("request body must be an object")
         phase_started_at = time.perf_counter()
-        image = _decode_image(data)
+        raw_images = _decode_images(data)
+        batch_size = len(raw_images)
+        image = raw_images[0]
         timing["decode_ms"] = _elapsed_ms(phase_started_at)
         if "pos_points" in data or "neg_points" in data or "obj_bbox" in data:
+            if batch_size != 1:
+                raise RequestError("interaction requests require exactly one image")
             return _response(
                 context,
                 context.user_data.model.interact(
@@ -598,9 +642,13 @@ def handler(context, event):
         if not isinstance(shapes, list) or not isinstance(states, list):
             raise RequestError("shapes and states must be arrays")
 
-        encoder_events = _cuda_timing_events(context.user_data.model.device)
-        image = context.user_data.model.preprocess_image(image, timing, encoder_events)
         if not states:
+            if batch_size != 1:
+                raise RequestError("tracking initialization requires exactly one image")
+            encoder_events = _cuda_timing_events(context.user_data.model.device)
+            image = context.user_data.model.preprocess_image(
+                image, timing, encoder_events
+            )
             tracker_events = []
             phase_started_at = time.perf_counter()
             results = {
@@ -625,7 +673,7 @@ def handler(context, event):
             timing["state_save_ms"] = _elapsed_ms(phase_started_at)
             _collect_cuda_timing(timing, "encoder_gpu_ms", [encoder_events])
             _collect_cuda_timing(timing, "tracker_gpu_ms", tracker_events)
-            timing["server_total_ms"] = _elapsed_ms(request_started_at)
+            _finish_timing(timing, request_started_at, batch_size)
             results["timing"] = timing
             return _response(context, results)
 
@@ -647,20 +695,42 @@ def handler(context, event):
             state_load_ms = 0
             tracker_wall_ms = 0
             tracker_events = []
+            loaded_states = []
             for token in tokens:
                 phase_started_at = time.perf_counter()
                 state, shape_type = context.user_data.state_store.load(
                     token, image, context.user_data.model.device
                 )
                 state_load_ms += _elapsed_ms(phase_started_at)
-                phase_started_at = time.perf_counter()
+                loaded_states.append((state, shape_type))
+
+            encoder_events = []
+            frame_results = []
+            for raw_image in raw_images:
                 events = _cuda_timing_events(context.user_data.model.device)
-                results["shapes"].append(
-                    context.user_data.model.track(image, state, shape_type, events)
+                image = context.user_data.model.preprocess_image(
+                    raw_image, timing, events
                 )
-                tracker_events.append(events)
-                tracker_wall_ms += _elapsed_ms(phase_started_at)
-                updated_states.append((image, shape_type, state))
+                encoder_events.append(events)
+                frame_shapes = []
+                for state, shape_type in loaded_states:
+                    phase_started_at = time.perf_counter()
+                    events = _cuda_timing_events(context.user_data.model.device)
+                    frame_shapes.append(
+                        context.user_data.model.track(
+                            image, state, shape_type, events
+                        )
+                    )
+                    tracker_events.append(events)
+                    tracker_wall_ms += _elapsed_ms(phase_started_at)
+                frame_results.append(frame_shapes)
+
+            results["shapes"] = frame_results[-1]
+            if batch_size > 1:
+                results["frame_results"] = frame_results
+            updated_states.extend(
+                (image, shape_type, state) for state, shape_type in loaded_states
+            )
             timing["state_load_ms"] = round(state_load_ms, 3)
             timing["tracker_wall_ms"] = round(tracker_wall_ms, 3)
             phase_started_at = time.perf_counter()
@@ -669,9 +739,9 @@ def handler(context, event):
                 timing["state_bytes"],
             ) = context.user_data.state_store.create_many(updated_states)
             timing["state_save_ms"] = _elapsed_ms(phase_started_at)
-        _collect_cuda_timing(timing, "encoder_gpu_ms", [encoder_events])
+        _collect_cuda_timing(timing, "encoder_gpu_ms", encoder_events)
         _collect_cuda_timing(timing, "tracker_gpu_ms", tracker_events)
-        timing["server_total_ms"] = _elapsed_ms(request_started_at)
+        _finish_timing(timing, request_started_at, batch_size)
         results["timing"] = timing
         return _response(context, results)
     except RequestError as error:

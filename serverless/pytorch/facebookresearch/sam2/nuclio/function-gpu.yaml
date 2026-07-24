@@ -10,7 +10,7 @@ metadata:
     type: tracker
     additional_types: interactor
     interactor_name: 'Segment Anything 2: Interactor'
-    version: 2
+    version: 3
     min_pos_points: 0
     min_neg_points: 0
     help_message: Add positive and negative points to update a SAM2 mask

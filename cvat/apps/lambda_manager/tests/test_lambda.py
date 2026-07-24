@@ -26,7 +26,7 @@ from cvat.apps.engine.tests.utils import (
     generate_image_file,
     get_paginated_collection,
 )
-from cvat.apps.lambda_manager.views import LambdaGateway
+from cvat.apps.lambda_manager.views import LambdaFunction, LambdaGateway
 
 LAMBDA_ROOT_PATH = "/api/lambda"
 LAMBDA_FUNCTIONS_PATH = f"{LAMBDA_ROOT_PATH}/functions"
@@ -992,6 +992,68 @@ class LambdaTestCases(_LambdaTestCaseBase):
                 f"{LAMBDA_FUNCTIONS_PATH}/{id_func}", None, data=data_main_task
             )
             self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_api_v2_lambda_functions_continue_tracker_in_a_frame_batch(self):
+        response = self._post_request(
+            f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker_with_supported_shape_types}",
+            self.admin,
+            data={
+                "task": self.main_task["id"],
+                "frame": 0,
+                "shapes": [{"type": "rectangle", "points": [12.12, 34.45, 54.0, 76.12]}],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        states = response.json()["states"]
+
+        def invoke_tracker_batch(func, payload):
+            self.assertEqual(func.id, id_function_tracker_with_supported_shape_types)
+            self.assertNotIn("image", payload)
+            self.assertEqual(len(payload["images"]), 2)
+            self.assertEqual(payload["shapes"], [None])
+            self.assertEqual(payload["states"], [{"key": "value"}])
+            return {
+                "shapes": [{"type": "rectangle", "points": [2, 2, 3, 3]}],
+                "frame_results": [
+                    [{"type": "rectangle", "points": [1, 1, 2, 2]}],
+                    [{"type": "rectangle", "points": [2, 2, 3, 3]}],
+                ],
+                "states": [{"key": "updated"}],
+                "timing": {"batch_size": 2},
+            }
+
+        with mock.patch(
+            "cvat.apps.lambda_manager.views.LambdaGateway.invoke",
+            side_effect=invoke_tracker_batch,
+        ):
+            response = self._post_request(
+                f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker_with_supported_shape_types}",
+                self.admin,
+                data={
+                    "task": self.main_task["id"],
+                    "frames": [1, 2],
+                    "states": states,
+                },
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(len(response.json()["frame_results"]), 2)
+        self.assertEqual(response.json()["timing"]["batch_size"], 2)
+        self.assertNotEqual(response.json()["states"], states)
+
+    def test_api_v2_lambda_functions_rejects_oversized_tracker_batch(self):
+        response = self._post_request(
+            f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker_with_supported_shape_types}",
+            self.admin,
+            data={
+                "task": self.main_task["id"],
+                "frames": list(range(LambdaFunction.TRACKER_MAX_BATCH_SIZE + 1)),
+                "states": ["not inspected"],
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("`frames` must contain", response.content.decode("UTF-8"))
 
     def test_api_v2_lambda_functions_create_tracker_bad_signature(self):
         signer = TimestampSigner(key="bad key")

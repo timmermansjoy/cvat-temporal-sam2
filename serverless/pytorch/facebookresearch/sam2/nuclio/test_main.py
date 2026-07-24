@@ -21,12 +21,14 @@ class _Response:
 class _StateStore:
     def __init__(self):
         self.created = []
+        self.loaded = []
 
     @contextlib.contextmanager
     def lock(self, _tokens):
         yield
 
     def load(self, token, _image, _device):
+        self.loaded.append(token)
         return {"token": token}, "mask"
 
     def create_many(self, states):
@@ -37,7 +39,7 @@ class _StateStore:
 class HandlerTest(unittest.TestCase):
     def setUp(self):
         def preprocess_image(image, timing, _events=None):
-            timing["preprocess_cpu_ms"] = 1
+            timing["preprocess_cpu_ms"] = timing.get("preprocess_cpu_ms", 0) + 1
             return SimpleNamespace(width=image.width, height=image.height)
 
         self.store = _StateStore()
@@ -79,6 +81,45 @@ class HandlerTest(unittest.TestCase):
         self.assertNotIn("encoder_gpu_ms", response.body["timing"])
         self.assertEqual(len(self.store.created), 1)
         self.assertNotEqual(response.body["states"], self.event.body["states"])
+
+    def test_tracking_batches_frames_with_one_state_load_and_save(self):
+        self.event.body = {
+            "images": ["first", "second"],
+            "shapes": [None, None],
+            "states": ["1" * 32, "2" * 32],
+        }
+        calls = 0
+
+        def track(_image, state, _shape_type, _events=None):
+            nonlocal calls
+            calls += 1
+            return {"points": [state["token"], calls]}
+
+        self.model.track = track
+
+        response = main.handler(self.context, self.event)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.body["frame_results"]), 2)
+        self.assertEqual(response.body["shapes"], response.body["frame_results"][-1])
+        self.assertEqual(response.body["timing"]["batch_size"], 2)
+        self.assertEqual(response.body["timing"]["preprocess_cpu_ms"], 1)
+        self.assertEqual(self.store.loaded, ["1" * 32, "2" * 32])
+        self.assertEqual(len(self.store.created), 1)
+        self.assertEqual(len(self.store.created[0]), 2)
+
+    def test_tracking_rejects_an_oversized_batch(self):
+        self.event.body = {
+            "images": ["image"] * (main.MAX_BATCH_SIZE + 1),
+            "shapes": [None],
+            "states": ["1" * 32],
+        }
+
+        response = main.handler(self.context, self.event)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("images must contain", response.body["error"])
+        self.assertEqual(self.store.created, [])
 
     def test_tracking_saves_nothing_when_any_prediction_fails(self):
         calls = 0

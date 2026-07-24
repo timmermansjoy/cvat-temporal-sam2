@@ -194,6 +194,7 @@ class LambdaFunction:
     )
 
     TRACKER_STATE_MAX_AGE = timedelta(hours=8)
+    TRACKER_MAX_BATCH_SIZE = 10
 
     def __init__(self, gateway, data):
         # ID of the function (e.g. omz.public.yolo-v3)
@@ -353,6 +354,29 @@ class LambdaFunction:
                     code=status.HTTP_400_BAD_REQUEST,
                 )
 
+        tracker_frames = data.get("frames")
+        if tracker_frames is not None:
+            if self.kind != FunctionKind.TRACKER:
+                raise ValidationError(
+                    "`frames` is only supported for tracker functions",
+                    code=status.HTTP_400_BAD_REQUEST,
+                )
+            if (
+                not isinstance(tracker_frames, list)
+                or not tracker_frames
+                or len(tracker_frames) > self.TRACKER_MAX_BATCH_SIZE
+                or any(
+                    not isinstance(frame, int) or isinstance(frame, bool)
+                    for frame in tracker_frames
+                )
+                or len(set(tracker_frames)) != len(tracker_frames)
+            ):
+                raise ValidationError(
+                    f"`frames` must contain between 1 and {self.TRACKER_MAX_BATCH_SIZE} "
+                    "unique integer frame numbers",
+                    code=status.HTTP_400_BAD_REQUEST,
+                )
+
         threshold = data.get("threshold")
         if threshold:
             payload.update({"threshold": threshold})
@@ -497,6 +521,14 @@ class LambdaFunction:
                     raise ValidationError(
                         f"The {desc} is outside the job range", code=status.HTTP_400_BAD_REQUEST
                     )
+            if tracker_frames is not None:
+                for frame in tracker_frames:
+                    abs_frame_id = data_start_frame + frame * step
+                    if not db_job.segment.contains_frame(abs_frame_id):
+                        raise ValidationError(
+                            "A tracking frame is outside the job range",
+                            code=status.HTTP_400_BAD_REQUEST,
+                        )
 
         if requested_roi is not None and self.kind not in {
             FunctionKind.DETECTOR,
@@ -581,6 +613,11 @@ class LambdaFunction:
             try:
                 if "states" not in data:
                     # initializing tracking
+                    if tracker_frames is not None:
+                        raise ValidationError(
+                            "Batched tracker requests can only continue existing tracking",
+                            code=status.HTTP_400_BAD_REQUEST,
+                        )
                     shapes = mandatory_arg("shapes")
                     states = []
                 elif "shapes" not in data:
@@ -601,7 +638,6 @@ class LambdaFunction:
 
                 payload.update(
                     {
-                        "image": self._get_image(db_task, mandatory_arg("frame")),
                         "shapes": list(map(prepare_shape, shapes)),
                         "states": [
                             (
@@ -615,6 +651,10 @@ class LambdaFunction:
                         ],
                     }
                 )
+                if tracker_frames is None:
+                    payload["image"] = self._get_image(db_task, mandatory_arg("frame"))
+                else:
+                    payload["images"] = self._get_images(db_task, tracker_frames)
             except BadSignature as ex:
                 raise ValidationError("Invalid or expired tracker state") from ex
         else:
@@ -707,6 +747,18 @@ class LambdaFunction:
                     None if points is None else {"type": ShapeType.RECTANGLE, "points": points}
                     for points in response["shapes"]
                 ]
+                if "frame_results" in response:
+                    response["frame_results"] = [
+                        [
+                            (
+                                None
+                                if points is None
+                                else {"type": ShapeType.RECTANGLE, "points": points}
+                            )
+                            for points in frame_shapes
+                        ]
+                        for frame_shapes in response["frame_results"]
+                    ]
             response["states"] = [
                 # We could've used .sign_object, but that unconditionally applies
                 # an extra layer of Base64 encoding, bloating each state by 33%.
@@ -743,6 +795,13 @@ class LambdaFunction:
         image = frame_provider.get_frame(frame)
 
         return base64.b64encode(image.data.getvalue()).decode("utf-8")
+
+    def _get_images(self, db_task, frames):
+        frame_provider = TaskFrameProvider(db_task)
+        return [
+            base64.b64encode(frame_provider.get_frame(frame).data.getvalue()).decode("utf-8")
+            for frame in frames
+        ]
 
 
 class LambdaQueue:

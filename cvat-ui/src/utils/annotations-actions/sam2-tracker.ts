@@ -14,6 +14,7 @@ const core = getCore();
 
 export const SAM2_TRACKER_MODEL_ID = 'pth-facebookresearch-sam2';
 export const SAM2_TRACKER_ACTION_NAME = 'Segment Anything 2: Tracker';
+const SAM2_TRACKER_BATCH_SIZE = 10;
 
 type Collection = Parameters<BaseCollectionAction['run']>[0]['collection'];
 type Shape = Collection['shapes'][number];
@@ -29,9 +30,11 @@ type SAM2ServerTiming = {
     state_save_ms?: number;
     state_bytes?: number;
     server_total_ms?: number;
+    batch_size?: number;
 };
 type SAM2TrackerResults = Omit<TrackerResults, 'shapes'> & {
     shapes: (MinimalShape | null)[];
+    frame_results?: (MinimalShape | null)[][];
     device?: string;
     model_id?: string;
     timing?: SAM2ServerTiming;
@@ -85,6 +88,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
         direction: Direction,
         result: SAM2TrackerResults,
         context: InferenceContext,
+        duration = performance.now() - startedAt,
     ): void {
         if (!this.#instance) {
             return;
@@ -92,7 +96,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
 
         this.#instance.logger.log(EventScope.sam2Inference, {
             ...(result.timing || {}),
-            duration: Math.round(performance.now() - startedAt),
+            duration: Math.round(duration),
             operation,
             frame,
             object_count: objectCount,
@@ -145,6 +149,22 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 frame < number && frame >= this.#targetFrame))
             .sort((left, right) => direction * (left - right));
         if (!targetFrames.length) {
+            return noChanges;
+        }
+        const framesToTrack: number[] = [];
+        for (const frame of targetFrames) {
+            if (framesToTrack.length === this.#frameCount) {
+                break;
+            }
+            if (cancelled()) {
+                return noChanges;
+            }
+            const frameData = await this.#instance.frames.get(frame);
+            if (!frameData.deleted) {
+                framesToTrack.push(frame);
+            }
+        }
+        if (!framesToTrack.length || cancelled()) {
             return noChanges;
         }
 
@@ -318,77 +338,13 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
         let endpointShapes: SessionShape[] | null = null;
         let trackedFrameCount = 0;
         let endpointFrame = number;
-        const expectedTrackedFrames = Math.min(this.#frameCount, targetFrames.length);
+        const expectedTrackedFrames = framesToTrack.length;
         const predictions = new Map<number, SessionShape[]>();
         const supersededShapes: Shape[] = [];
-        for (let index = 0; index < targetFrames.length; index++) {
-            if (trackedFrameCount === this.#frameCount) {
-                break;
-            }
-            if (cancelled()) {
-                return noChanges;
-            }
-
-            const frame = targetFrames[index];
-            const frameData = await this.#instance.frames.get(frame);
-            if (frameData.deleted) {
-                continue;
-            }
-            if (cancelled()) {
-                return noChanges;
-            }
-
-            const previousPredictions = previousWindow?.predictions.get(frame) ?? [];
-            if (previousPredictions.length) {
-                const statesAtFrame = await this.#instance.annotations.get(frame, false, []);
-                const matches = statesAtFrame.filter((state) => (
-                    state.objectType === ObjectType.SHAPE &&
-                    state.source === Source.AUTO &&
-                    previousPredictions.some((prediction) => (
-                        state.shapeType === prediction.type &&
-                        state.label.id === prediction.labelID &&
-                        (state.group?.id ?? 0) === prediction.groupID &&
-                        isEqual(state.points, prediction.points)
-                    ))
-                ));
-                supersededShapes.push(...await Promise.all(matches.map((state) => state.export())) as Shape[]);
-            }
-
-            hasTrackedFrame = true;
-            trackedFrameCount++;
-            endpointFrame = frame;
-            onProgress(
-                `Tracking frame ${trackedFrameCount} of ${expectedTrackedFrames}`,
-                Math.round(((trackedFrameCount - 1) / expectedTrackedFrames) * 100),
-            );
-            let result: SAM2TrackerResults;
-            try {
-                const startedAt = performance.now();
-                result = await core.lambda.call(taskID, this.#model, {
-                    type: 'track',
-                    frame,
-                    ...job,
-                    states,
-                }) as SAM2TrackerResults;
-                this.#logInference(
-                    'track', frame, startedAt, initialShapes.length, objectKey, runID, direction, result, { frames: contextFrames, anchor: anchorFrame, reused: reusedContext },
-                );
-            } catch (error) {
-                this.#sessions.delete(sessionKey);
-                throw error;
-            }
-            if (
-                !Array.isArray(result.states) ||
-                !Array.isArray(result.shapes) ||
-                result.states.length !== initialShapes.length ||
-                result.shapes.length !== initialShapes.length
-            ) {
-                throw new Error('SAM2 tracker returned an invalid tracking response');
-            }
-            states = result.states;
-            contextFrames++;
-
-            const correctedKeyframes = targetObjects.flatMap((targetObject, targetIndex) => {
+        const supportsFrameBatches = this.#model.version >= 3;
+        const batchSize = supportsFrameBatches ? SAM2_TRACKER_BATCH_SIZE : 1;
+        const correctedKeyframesFor = (frame: number): { targetIndex: number; shape: MinimalShape }[] => (
+            targetObjects.flatMap((targetObject, targetIndex) => {
                 if (targetObjectStates[targetIndex].objectType !== ObjectType.TRACK) {
                     return [];
                 }
@@ -401,104 +357,190 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                         points: [...existing.points],
                     },
                 }] : [];
-            });
-            if (correctedKeyframes.length) {
-                let reinitialized: SAM2TrackerResults;
-                try {
-                    const startedAt = performance.now();
-                    reinitialized = await core.lambda.call(taskID, this.#model, {
-                        type: 'init_tracking',
-                        frame,
-                        ...job,
-                        shapes: correctedKeyframes.map(({ shape }) => shape),
-                    }) as SAM2TrackerResults;
-                    this.#logInference(
-                        'correct', frame, startedAt, correctedKeyframes.length, objectKey, runID, direction, reinitialized, { frames: 0, anchor: frame, reused: false },
-                    );
-                } catch (error) {
-                    this.#sessions.delete(sessionKey);
-                    throw error;
-                }
-                if (
-                    !Array.isArray(reinitialized.states) ||
-                    reinitialized.states.length !== correctedKeyframes.length
-                ) {
-                    throw new Error('SAM2 tracker returned an invalid correction response');
-                }
-
-                for (let correctionIndex = 0; correctionIndex < correctedKeyframes.length; correctionIndex++) {
-                    const { targetIndex, shape } = correctedKeyframes[correctionIndex];
-                    states[targetIndex] = reinitialized.states[correctionIndex];
-                    result.shapes[targetIndex] = shape;
-                }
-                contextFrames = 1;
-                anchorFrame = frame;
-                reusedContext = false;
-            }
-
-            endpointShapes = result.shapes.every((shape) => shape !== null) ?
-                result.shapes.map((shape, shapeIndex) => ({
-                    ...shape as MinimalShape,
-                    points: [...(shape as MinimalShape).points],
-                    clientID: sessionShapes[shapeIndex].clientID,
-                    groupID: sessionShapes[shapeIndex].groupID,
-                    labelID: sessionShapes[shapeIndex].labelID,
-                })) : null;
-            predictions.set(frame, result.shapes.flatMap((shape, shapeIndex) => (shape ? [{
-                ...shape,
-                points: [...shape.points],
-                clientID: sessionShapes[shapeIndex].clientID,
-                groupID: sessionShapes[shapeIndex].groupID,
-                labelID: sessionShapes[shapeIndex].labelID,
-            }] : [])));
+            })
+        );
+        for (let index = 0; index < framesToTrack.length;) {
             if (cancelled()) {
                 return noChanges;
             }
 
-            for (let targetIndex = 0; targetIndex < targetObjects.length; targetIndex++) {
-                const targetObject = targetObjects[targetIndex];
-                const targetObjectState = targetObjectStates[targetIndex];
-                const prediction = result.shapes[targetIndex] ?? null;
-                if (targetObjectState.objectType === ObjectType.TRACK) {
-                    const track = targetObject as Track;
-                    const existing = track.shapes.find((shape) => shape.frame === frame);
-                    if (existing && existing.source !== Source.AUTO) {
-                        continue;
-                    }
-                    const updated = {
-                        attributes: cloneDeep(existing?.attributes ?? []),
-                        frame,
-                        source: Source.AUTO,
-                        occluded: existing?.occluded ?? targetObjectState.occluded,
-                        outside: prediction === null,
-                        points: prediction?.points ?? existing?.points ?? [...targetObjectState.points as number[]],
-                        rotation: existing?.rotation ?? 0,
-                        z_order: existing?.z_order ?? targetObjectState.zOrder,
-                        type: targetObjectState.shapeType,
-                    };
+            let batchEnd = index;
+            while (batchEnd < framesToTrack.length && batchEnd - index < batchSize) {
+                const frame = framesToTrack[batchEnd++];
+                if (correctedKeyframesFor(frame).length) {
+                    break;
+                }
+            }
+            const batchFrames = framesToTrack.slice(index, batchEnd);
+            index = batchEnd;
+            let result: SAM2TrackerResults;
+            let startedAt = 0;
+            let frameDuration = 0;
+            try {
+                startedAt = performance.now();
+                result = await core.lambda.call(taskID, this.#model, {
+                    type: 'track',
+                    ...(supportsFrameBatches ? { frames: batchFrames } : { frame: batchFrames[0] }),
+                    ...job,
+                    states,
+                }) as SAM2TrackerResults;
+                frameDuration = (performance.now() - startedAt) / batchFrames.length;
+            } catch (error) {
+                this.#sessions.delete(sessionKey);
+                throw error;
+            }
+            const frameResults = result.frame_results ??
+                (batchFrames.length === 1 && Array.isArray(result.shapes) ? [result.shapes] : []);
+            if (
+                !Array.isArray(result.states) ||
+                result.states.length !== initialShapes.length ||
+                frameResults.length !== batchFrames.length ||
+                frameResults.some((shapes) => (
+                    !Array.isArray(shapes) || shapes.length !== initialShapes.length
+                ))
+            ) {
+                throw new Error('SAM2 tracker returned an invalid tracking response');
+            }
+            states = result.states;
 
-                    if (existing) {
-                        Object.assign(existing, updated);
-                    } else {
-                        track.shapes.push(updated);
+            for (let batchIndex = 0; batchIndex < batchFrames.length; batchIndex++) {
+                const frame = batchFrames[batchIndex];
+                const frameShapes = frameResults[batchIndex];
+                const frameResult = { ...result, shapes: frameShapes };
+                const previousPredictions = previousWindow?.predictions.get(frame) ?? [];
+                if (previousPredictions.length) {
+                    const statesAtFrame = await this.#instance.annotations.get(frame, false, []);
+                    const matches = statesAtFrame.filter((state) => (
+                        state.objectType === ObjectType.SHAPE &&
+                        state.source === Source.AUTO &&
+                        previousPredictions.some((prediction) => (
+                            state.shapeType === prediction.type &&
+                            state.label.id === prediction.labelID &&
+                            (state.group?.id ?? 0) === prediction.groupID &&
+                            isEqual(state.points, prediction.points)
+                        ))
+                    ));
+                    supersededShapes.push(
+                        ...await Promise.all(matches.map((state) => state.export())) as Shape[],
+                    );
+                }
+
+                hasTrackedFrame = true;
+                trackedFrameCount++;
+                endpointFrame = frame;
+                onProgress(
+                    `Tracking frame ${trackedFrameCount} of ${expectedTrackedFrames}`,
+                    Math.round(((trackedFrameCount - 1) / expectedTrackedFrames) * 100),
+                );
+                this.#logInference(
+                    'track', frame, startedAt, initialShapes.length, objectKey, runID, direction, frameResult, { frames: contextFrames, anchor: anchorFrame, reused: reusedContext }, frameDuration,
+                );
+                contextFrames++;
+
+                const correctedKeyframes = correctedKeyframesFor(frame);
+                if (correctedKeyframes.length) {
+                    let reinitialized: SAM2TrackerResults;
+                    try {
+                        const correctionStartedAt = performance.now();
+                        reinitialized = await core.lambda.call(taskID, this.#model, {
+                            type: 'init_tracking',
+                            frame,
+                            ...job,
+                            shapes: correctedKeyframes.map(({ shape }) => shape),
+                        }) as SAM2TrackerResults;
+                        this.#logInference(
+                            'correct', frame, correctionStartedAt, correctedKeyframes.length, objectKey, runID, direction, reinitialized, { frames: 0, anchor: frame, reused: false },
+                        );
+                    } catch (error) {
+                        this.#sessions.delete(sessionKey);
+                        throw error;
                     }
-                    track.frame = Math.min(track.frame, frame);
-                } else if (prediction) {
-                    const shape = targetObject as Shape;
-                    trackedShapes.push({
-                        elements: cloneDeep(shape.elements),
-                        group: shape.group,
-                        attributes: cloneDeep(shape.attributes),
-                        frame,
-                        label_id: shape.label_id,
-                        points: [...prediction.points],
-                        source: Source.AUTO,
-                        type: prediction.type,
-                        rotation: shape.rotation,
-                        outside: false,
-                        occluded: shape.occluded,
-                        z_order: shape.z_order,
-                    });
+                    if (
+                        !Array.isArray(reinitialized.states) ||
+                        reinitialized.states.length !== correctedKeyframes.length
+                    ) {
+                        throw new Error('SAM2 tracker returned an invalid correction response');
+                    }
+
+                    for (
+                        let correctionIndex = 0;
+                        correctionIndex < correctedKeyframes.length;
+                        correctionIndex++
+                    ) {
+                        const { targetIndex, shape } = correctedKeyframes[correctionIndex];
+                        states[targetIndex] = reinitialized.states[correctionIndex];
+                        frameShapes[targetIndex] = shape;
+                    }
+                    contextFrames = 1;
+                    anchorFrame = frame;
+                    reusedContext = false;
+                }
+
+                endpointShapes = frameShapes.every((shape) => shape !== null) ?
+                    frameShapes.map((shape, shapeIndex) => ({
+                        ...shape as MinimalShape,
+                        points: [...(shape as MinimalShape).points],
+                        clientID: sessionShapes[shapeIndex].clientID,
+                        groupID: sessionShapes[shapeIndex].groupID,
+                        labelID: sessionShapes[shapeIndex].labelID,
+                    })) : null;
+                predictions.set(frame, frameShapes.flatMap((shape, shapeIndex) => (shape ? [{
+                    ...shape,
+                    points: [...shape.points],
+                    clientID: sessionShapes[shapeIndex].clientID,
+                    groupID: sessionShapes[shapeIndex].groupID,
+                    labelID: sessionShapes[shapeIndex].labelID,
+                }] : [])));
+                if (cancelled()) {
+                    return noChanges;
+                }
+
+                for (let targetIndex = 0; targetIndex < targetObjects.length; targetIndex++) {
+                    const targetObject = targetObjects[targetIndex];
+                    const targetObjectState = targetObjectStates[targetIndex];
+                    const prediction = frameShapes[targetIndex] ?? null;
+                    if (targetObjectState.objectType === ObjectType.TRACK) {
+                        const track = targetObject as Track;
+                        const existing = track.shapes.find((shape) => shape.frame === frame);
+                        if (existing && existing.source !== Source.AUTO) {
+                            continue;
+                        }
+                        const updated = {
+                            attributes: cloneDeep(existing?.attributes ?? []),
+                            frame,
+                            source: Source.AUTO,
+                            occluded: existing?.occluded ?? targetObjectState.occluded,
+                            outside: prediction === null,
+                            points: prediction?.points ??
+                                existing?.points ?? [...targetObjectState.points as number[]],
+                            rotation: existing?.rotation ?? 0,
+                            z_order: existing?.z_order ?? targetObjectState.zOrder,
+                            type: targetObjectState.shapeType,
+                        };
+
+                        if (existing) {
+                            Object.assign(existing, updated);
+                        } else {
+                            track.shapes.push(updated);
+                        }
+                        track.frame = Math.min(track.frame, frame);
+                    } else if (prediction) {
+                        const shape = targetObject as Shape;
+                        trackedShapes.push({
+                            elements: cloneDeep(shape.elements),
+                            group: shape.group,
+                            attributes: cloneDeep(shape.attributes),
+                            frame,
+                            label_id: shape.label_id,
+                            points: [...prediction.points],
+                            source: Source.AUTO,
+                            type: prediction.type,
+                            rotation: shape.rotation,
+                            outside: false,
+                            occluded: shape.occluded,
+                            z_order: shape.z_order,
+                        });
+                    }
                 }
             }
         }
