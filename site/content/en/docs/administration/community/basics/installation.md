@@ -444,6 +444,28 @@ if you want to keep the dashboard in production you should read Traefik's
 
 Please follow this {{< ilink "/docs/administration/community/advanced/installation_automatic_annotation" "guide" >}}.
 
+### Set persistent data location
+
+By default, Docker stores CVAT's persistent data in named volumes managed by Docker.
+To store all persistent data under a specific directory on the Docker host, create the
+required directories and include `docker-compose.storage.yml`:
+
+```shell
+export CVAT_HOST_DATA_DIR=/mnt/cvat
+mkdir -p "$CVAT_HOST_DATA_DIR"/{cvat_db,cvat_data,cvat_keys,cvat_logs,cvat_inmem_db,cvat_events_db,cvat_cache_db}
+docker compose -f docker-compose.yml -f docker-compose.storage.yml up -d
+```
+
+`CVAT_HOST_DATA_DIR` must be an absolute path. Use the same environment variable and
+Compose files for subsequent `docker compose` commands.
+
+{{% alert title="Important" color="warning" %}}
+Configure the location before the first startup. For an existing installation, back up
+and migrate the current named volumes before using this configuration; otherwise CVAT
+will start with empty storage. See the
+{{< ilink "/docs/administration/community/advanced/backup_guide" "backup guide" >}}.
+{{% /alert %}}
+
 ### Stop all containers
 
 The command below stops and removes containers and networks created by `up`.

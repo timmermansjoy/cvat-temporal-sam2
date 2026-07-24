@@ -1,0 +1,40 @@
+# Copyright (C) CVAT.ai Corporation
+#
+# SPDX-License-Identifier: MIT
+
+volumes:
+  cvat_db:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_db
+      o: bind
+  cvat_data:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_data
+      o: bind
+  cvat_keys:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_keys
+      o: bind
+  cvat_logs:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_logs
+      o: bind
+  cvat_inmem_db:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_inmem_db
+      o: bind
+  cvat_events_db:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_events_db
+      o: bind
+  cvat_cache_db:
+    driver_opts:
+      type: none
+      device: ${CVAT_HOST_DATA_DIR:?CVAT_HOST_DATA_DIR must be set}/cvat_cache_db
+      o: bind
