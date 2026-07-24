@@ -746,7 +746,7 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 if (actionInstance instanceof Task) {
                     await jobInstance.annotations.clear({ reload: true });
                 }
-                await this.changeFrame(firstPredictedFrame);
+                this.changeFrame(firstPredictedFrame);
                 activateSAM2Prediction(objectState.clientID);
             } else {
                 writeLatestFrame(destinationJob.id, firstPredictedFrame);
