@@ -9,6 +9,7 @@ import { withRouter } from 'react-router';
 import { RouteComponentProps } from 'react-router-dom';
 import notification from 'antd/lib/notification';
 import Progress from 'antd/lib/progress';
+import { EventScope } from 'cvat-logger';
 
 import {
     activateObject,
@@ -48,7 +49,9 @@ import { writeLatestFrame } from 'utils/remember-latest-frame';
 import { finishDraw } from 'utils/drawing';
 import { toClipboard } from 'utils/to-clipboard';
 import { Chapter } from 'cvat-core/src/frames';
-import { SAM2_TRACKER_ACTION_NAME } from 'utils/annotations-actions/sam2-tracker';
+import {
+    SAM2_TRACKER_ACTION_NAME, SAM2_TRACKER_MODEL_ID,
+} from 'utils/annotations-actions/sam2-tracker';
 import { ShortcutScope } from 'utils/enums';
 import { subKeyMap } from 'utils/component-subkeymap';
 
@@ -608,6 +611,8 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
         }
 
         this.trackingSAM2 = true;
+        const trackingStartedAt = performance.now();
+        let trackingAttempted = false;
         const directionLabel = direction === 1 ? 'forward' : 'backward';
         const progressKey = `sam2-tracking-${jobInstance.id}-${directionLabel}`;
         const showProgress = (message: string, percent: number): void => {
@@ -713,11 +718,20 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 return;
             }
 
+            trackingAttempted = true;
             await core.actions.call(actionInstance, action, {
                 'Convert polygon shapes to tracks': 'false',
                 'Target frame': String(targetFrame),
                 'Frame count': String(sam2FrameCount),
             }, frameNumber, [actionObjectState], showProgress, () => false);
+            jobInstance.logger.log(EventScope.sam2Tracking, {
+                duration: Math.round(performance.now() - trackingStartedAt),
+                outcome: 'success',
+                direction: directionLabel,
+                requested_frames: sam2FrameCount,
+                model_id: SAM2_TRACKER_MODEL_ID,
+                video_name: jobInstance.taskName || `Task ${jobInstance.taskId}`,
+            });
             let semanticGroupID = objectState.group?.id ?? null;
             if (actionInstance instanceof Task) {
                 const prediction = (await actionInstance.annotations.get(firstPredictedFrame, false, []))
@@ -754,6 +768,17 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 placement: 'bottomRight',
             });
         } catch (error) {
+            if (trackingAttempted) {
+                jobInstance.logger.log(EventScope.sam2Tracking, {
+                    duration: Math.round(performance.now() - trackingStartedAt),
+                    outcome: 'failed',
+                    direction: directionLabel,
+                    requested_frames: sam2FrameCount,
+                    model_id: SAM2_TRACKER_MODEL_ID,
+                    video_name: jobInstance.taskName || `Task ${jobInstance.taskId}`,
+                    error_type: error instanceof Error ? error.name : 'unknown',
+                });
+            }
             notification.error({
                 key: progressKey,
                 message: error instanceof Error ? error.message : String(error),

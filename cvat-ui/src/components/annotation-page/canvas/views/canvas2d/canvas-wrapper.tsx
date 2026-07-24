@@ -23,7 +23,7 @@ import {
 } from 'cvat-canvas-wrapper';
 import { Canvas3d } from 'cvat-canvas3d-wrapper';
 import {
-    AnnotationConflict, ObjectState, ObjectType, ShapeType, QualityConflict, getCore,
+    AnnotationConflict, ObjectState, ObjectType, ShapeType, Source, QualityConflict, getCore,
 } from 'cvat-core-wrapper';
 import { openZLayerInObjectsSidebar, scrollAndExpandState } from 'utils/objects-sidebar';
 import config from 'config';
@@ -907,9 +907,21 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
 
     private onCanvasEditDone = (event: any): void => {
         const {
-            activeControl, onUpdateAnnotations, updateActiveControl, onUpdateEditedObject,
+            activeControl, jobInstance, onUpdateAnnotations, updateActiveControl, onUpdateEditedObject,
         } = this.props;
         const { state, points, rotation } = event.detail;
+        if (
+            state.shapeType === ShapeType.MASK &&
+            [Source.AUTO, Source.SEMI_AUTO].includes(state.source)
+        ) {
+            jobInstance.logger.log(EventScope.editMask, {
+                frame: state.frame,
+                object_key: state.clientID,
+                previous_source: state.source,
+                video_name: jobInstance.taskName || `Task ${jobInstance.taskId}`,
+                ...(state.serverID ? { obj_id: state.serverID } : {}),
+            });
+        }
         if (state.rotation !== rotation) {
             state.rotation = rotation;
         } else {

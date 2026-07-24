@@ -59,6 +59,10 @@ class ClientEventsSerializer(serializers.Serializer):
                 "action:redo",
                 "debug:info",
                 "run:annotations_action",
+                "run:sam2_tracking",
+                "run:sam2_inference",
+                "edit:mask",
+                "confirm:mask",
                 "click:element",
                 USER_ACTIVITY_SCOPE,
             )

@@ -133,6 +133,9 @@ class LambdaGateway:
     def list(self):
         data = self._http(url=self.NUCLIO_ROOT_URL)
         for item in data.values():
+            port = item.get("status", {}).get("httpPort")
+            if not isinstance(port, int) or not 1 <= port <= 65535:
+                continue
             for variant in self._function_variants(item):
                 try:
                     yield LambdaFunction(self, variant)
@@ -262,6 +265,8 @@ class LambdaFunction:
         self.description = data["spec"]["description"]
         # http port to access the serverless function
         self.port = data["status"].get("httpPort")
+        if not isinstance(self.port, int) or not 1 <= self.port <= 65535:
+            raise InvalidFunctionMetadataError(f"{self.id} lambda function is not ready")
         # display name for the function
         self.name = meta_anno.get("name", self.id)
         self.min_pos_points = int(meta_anno.get("min_pos_points", 1))

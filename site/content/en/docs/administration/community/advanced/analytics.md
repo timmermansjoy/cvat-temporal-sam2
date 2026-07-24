@@ -160,9 +160,36 @@ Client events:
 
 - `run:annotations_action`
 
+- `run:sam2_tracking`, `run:sam2_inference`, `edit:mask`, `confirm:mask`
+
 - `click:element`
 
 - `debug:info`
+
+### SAM2 tracker dashboard
+
+The **SAM2 Tracker** dashboard uses the following definitions:
+
+- **Inferred frames** counts completed SAM2 frame predictions.
+- **Accepted unchanged** counts `AUTO` masks confirmed without a preceding edit.
+- **Corrected frames** counts unique SAM2-predicted object/frame pairs that were edited.
+- **Correction sessions** counts completed edits, including repeated edits of the same mask.
+- **Correction rate** is corrected frames divided by inferred frames.
+- Inference latency is measured end to end in the browser and reported as P50, P95, and maximum;
+  initialization latency is reported separately.
+- **Previous frames used** counts non-conditioning memory frames available to a prediction and is
+  capped at six by SAM2's configured memory window.
+- **Frames since anchor** counts propagated frames since initialization or correction. SAM2 also
+  uses the conditioning anchor separately from the six-frame previous-memory window.
+- **Anchor distance** is the frame distance from the latest initialization or corrected mask.
+- **Session reuse rate** is the percentage of predictions made from a reused tracker session.
+- **Correction reinitializations** counts times a corrected mask reset the temporal anchor.
+- The **User contribution leaderboard** attributes SAM2 runs, corrected frames, correction sessions,
+  and unchanged confirmations to the event user. **Annotations created** sums objects created by
+  drawing, pasting, or propagation.
+
+Mask confirmations and edits are attributed to SAM2 only when their task, frame, and in-session
+object identifier match a recorded SAM2 prediction in the selected dashboard time range.
 
 ### Working time calculation
 

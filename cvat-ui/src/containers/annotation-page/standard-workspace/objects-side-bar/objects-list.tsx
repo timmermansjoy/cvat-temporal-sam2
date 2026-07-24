@@ -8,6 +8,7 @@ import React from 'react';
 import { connect } from 'react-redux';
 import notification from 'antd/lib/notification';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
+import { EventScope } from 'cvat-logger';
 
 import ObjectsListComponent from 'components/annotation-page/standard-workspace/objects-side-bar/objects-list';
 import {
@@ -572,6 +573,7 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
             changeFrame,
             workspace,
             renderData,
+            jobInstance,
         } = this.props;
         const {
             objectStates, sortedStatesID, statesOrdering, filteredStates,
@@ -684,7 +686,17 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
                             return;
                         }
                         try {
+                            const previousSource = state.source;
                             if (await state.confirm()) {
+                                if ([Source.AUTO, Source.SEMI_AUTO].includes(previousSource)) {
+                                    jobInstance.logger.log(EventScope.confirmMask, {
+                                        frame: state.frame,
+                                        object_key: state.clientID,
+                                        previous_source: previousSource,
+                                        video_name: jobInstance.taskName || `Task ${jobInstance.taskId}`,
+                                        ...(state.serverID ? { obj_id: state.serverID } : {}),
+                                    });
+                                }
                                 this.props.fetchAnnotations();
                                 notification.success({ message: 'Mask confirmed' });
                             } else {

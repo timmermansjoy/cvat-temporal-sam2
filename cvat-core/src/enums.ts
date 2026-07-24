@@ -133,6 +133,10 @@ export enum EventScope {
     debugInfo = 'debug:info',
 
     annotationsAction = 'run:annotations_action',
+    sam2Tracking = 'run:sam2_tracking',
+    sam2Inference = 'run:sam2_inference',
+    editMask = 'edit:mask',
+    confirmMask = 'confirm:mask',
     clickElement = 'click:element',
     userActivity = 'user:activity',
 }

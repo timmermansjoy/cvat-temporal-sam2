@@ -31,15 +31,19 @@ class _StateStore:
 
     def create_many(self, states):
         self.created.append(states)
-        return [f"{index + 10:032x}" for index in range(len(states))]
+        return [f"{index + 10:032x}" for index in range(len(states))], 123
 
 
 class HandlerTest(unittest.TestCase):
     def setUp(self):
+        def preprocess_image(image, timing, _events=None):
+            timing["preprocess_cpu_ms"] = 1
+            return SimpleNamespace(width=image.width, height=image.height)
+
         self.store = _StateStore()
         self.model = SimpleNamespace(
             device="cpu",
-            preprocess_image=lambda image: SimpleNamespace(width=image.width, height=image.height),
+            preprocess_image=preprocess_image,
         )
         self.context = SimpleNamespace(
             Response=_Response,
@@ -59,19 +63,27 @@ class HandlerTest(unittest.TestCase):
         self.addCleanup(self.decode_image.stop)
 
     def test_tracking_saves_all_states_after_all_predictions_succeed(self):
-        self.model.track = lambda _image, state, _shape_type: {"points": [state["token"]]}
+        self.model.track = lambda _image, state, _shape_type, _events=None: {
+            "points": [state["token"]]
+        }
 
         response = main.handler(self.context, self.event)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.body["shapes"]), 2)
+        self.assertEqual(response.body["device"], "cpu")
+        self.assertEqual(response.body["model_id"], main.MODEL_ID)
+        self.assertEqual(response.body["timing"]["state_bytes"], 123)
+        self.assertEqual(response.body["timing"]["preprocess_cpu_ms"], 1)
+        self.assertGreaterEqual(response.body["timing"]["server_total_ms"], 0)
+        self.assertNotIn("encoder_gpu_ms", response.body["timing"])
         self.assertEqual(len(self.store.created), 1)
         self.assertNotEqual(response.body["states"], self.event.body["states"])
 
     def test_tracking_saves_nothing_when_any_prediction_fails(self):
         calls = 0
 
-        def track(_image, _state, _shape_type):
+        def track(_image, _state, _shape_type, _events=None):
             nonlocal calls
             calls += 1
             if calls == 2:
@@ -86,7 +98,7 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual(self.store.created, [])
 
     def test_tracking_returns_service_unavailable_when_redis_write_fails(self):
-        self.model.track = lambda _image, _state, _shape_type: {"points": []}
+        self.model.track = lambda _image, _state, _shape_type, _events=None: {"points": []}
         self.store.create_many = mock.Mock(side_effect=redis.RedisError("unavailable"))
 
         response = main.handler(self.context, self.event)

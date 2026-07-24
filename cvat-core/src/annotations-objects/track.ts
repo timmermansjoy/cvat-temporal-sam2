@@ -114,7 +114,7 @@ export class Track extends Drawn {
                 last,
             },
             frame,
-            source: this.shapes[prev]?.source ?? this.source,
+            source: this.shapes[frame]?.source ?? this.shapes[prev]?.source ?? this.source,
             __internal: this.withContext(),
         };
     }

@@ -4,6 +4,7 @@
 
 import { cloneDeep, isEqual, range } from 'lodash';
 
+import { EventScope } from 'cvat-logger';
 import {
     ActionParameterType, BaseCollectionAction, Job, MLModel, ObjectState,
     ObjectType, ShapeType, Source, Task, getCore, type MinimalShape, type TrackerResults,
@@ -18,14 +19,33 @@ type Collection = Parameters<BaseCollectionAction['run']>[0]['collection'];
 type Shape = Collection['shapes'][number];
 type Track = Collection['tracks'][number];
 type TrackShape = Track['shapes'][number];
-type SAM2TrackerResults = Omit<TrackerResults, 'shapes'> & { shapes: (MinimalShape | null)[] };
+type SAM2ServerTiming = {
+    decode_ms?: number;
+    preprocess_cpu_ms?: number;
+    state_load_ms?: number;
+    encoder_gpu_ms?: number;
+    tracker_wall_ms?: number;
+    tracker_gpu_ms?: number;
+    state_save_ms?: number;
+    state_bytes?: number;
+    server_total_ms?: number;
+};
+type SAM2TrackerResults = Omit<TrackerResults, 'shapes'> & {
+    shapes: (MinimalShape | null)[];
+    device?: string;
+    model_id?: string;
+    timing?: SAM2ServerTiming;
+};
 type Direction = -1 | 1;
 type SessionShape = MinimalShape & { clientID: number; groupID: number; labelID: number };
 type TrackingSession = {
     frame: number;
     shapes: SessionShape[];
     states: TrackerResults['states'];
+    contextFrames: number;
+    anchorFrame: number;
 };
+type InferenceContext = { frames: number; anchor: number; reused: boolean };
 type PredictionWindow = {
     jobKey: string;
     objects: Pick<SessionShape, 'clientID'>[];
@@ -55,6 +75,42 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
     readonly #sessions = new Map<string, TrackingSession>();
     readonly #predictionWindows: PredictionWindow[] = [];
 
+    #logInference(
+        operation: 'initialize' | 'track' | 'correct',
+        frame: number,
+        startedAt: number,
+        objectCount: number,
+        objectKey: number,
+        runID: string,
+        direction: Direction,
+        result: SAM2TrackerResults,
+        context: InferenceContext,
+    ): void {
+        if (!this.#instance) {
+            return;
+        }
+
+        this.#instance.logger.log(EventScope.sam2Inference, {
+            ...(result.timing || {}),
+            duration: Math.round(performance.now() - startedAt),
+            operation,
+            frame,
+            object_count: objectCount,
+            object_key: objectKey,
+            run_id: runID,
+            direction: direction === 1 ? 'forward' : 'backward',
+            device: result.device || 'unknown',
+            model_id: result.model_id || String(this.#model.id),
+            model_name: this.#model.name,
+            model_version: this.#model.version,
+            context_frames: context.frames,
+            distance_from_anchor: Math.abs(frame - context.anchor),
+            session_reused: context.reused,
+            video_name: this.#instance instanceof Job ?
+                this.#instance.taskName || `Task ${this.#instance.taskId}` : this.#instance.name,
+        });
+    }
+
     public constructor(model: MLModel) {
         super();
         this.#model = model;
@@ -79,6 +135,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
         }
 
         const direction: Direction = this.#targetFrame > number ? 1 : -1;
+        const runID = `${Date.now()}-${number}-${direction}`;
 
         const frameNumbers = this.#instance instanceof Job ?
             await this.#instance.frames.frameNumbers() : range(0, this.#instance.size);
@@ -215,6 +272,9 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
         const sessionKey = `${jobKey}:${direction}`;
         const session = this.#sessions.get(sessionKey);
         const sourceObjects = sessionShapes.map(({ clientID }) => ({ clientID }));
+        const objectKey = sessionShapes.length === 1 ? sessionShapes[0].clientID : 0;
+        const sessionReused = session?.frame === number && isEqual(session.shapes, sessionShapes);
+        let reusedContext = sessionReused;
         const previousWindow = [...this.#predictionWindows].reverse().find((window) => (
             window.jobKey === jobKey &&
             window.predictions.has(number) &&
@@ -222,19 +282,27 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
         ));
 
         let states: TrackerResults['states'];
-        if (session?.frame === number && isEqual(session.shapes, sessionShapes)) {
+        let contextFrames = 1;
+        let anchorFrame = number;
+        if (sessionReused) {
             states = session.states;
+            contextFrames = session.contextFrames;
+            anchorFrame = session.anchorFrame;
         } else {
             onProgress('Initializing SAM2 tracker', 0);
             if (cancelled()) {
                 return noChanges;
             }
+            const startedAt = performance.now();
             const initialized = await core.lambda.call(taskID, this.#model, {
                 type: 'init_tracking',
                 frame: number,
                 ...job,
                 shapes: initialShapes,
             }) as SAM2TrackerResults;
+            this.#logInference(
+                'initialize', number, startedAt, initialShapes.length, objectKey, runID, direction, initialized, { frames: 0, anchor: number, reused: false },
+            );
 
             if (!Array.isArray(initialized.states) || initialized.states.length !== initialShapes.length) {
                 throw new Error('SAM2 tracker returned an invalid initialization response');
@@ -295,12 +363,16 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             );
             let result: SAM2TrackerResults;
             try {
+                const startedAt = performance.now();
                 result = await core.lambda.call(taskID, this.#model, {
                     type: 'track',
                     frame,
                     ...job,
                     states,
                 }) as SAM2TrackerResults;
+                this.#logInference(
+                    'track', frame, startedAt, initialShapes.length, objectKey, runID, direction, result, { frames: contextFrames, anchor: anchorFrame, reused: reusedContext },
+                );
             } catch (error) {
                 this.#sessions.delete(sessionKey);
                 throw error;
@@ -314,6 +386,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 throw new Error('SAM2 tracker returned an invalid tracking response');
             }
             states = result.states;
+            contextFrames++;
 
             const correctedKeyframes = targetObjects.flatMap((targetObject, targetIndex) => {
                 if (targetObjectStates[targetIndex].objectType !== ObjectType.TRACK) {
@@ -332,12 +405,16 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             if (correctedKeyframes.length) {
                 let reinitialized: SAM2TrackerResults;
                 try {
+                    const startedAt = performance.now();
                     reinitialized = await core.lambda.call(taskID, this.#model, {
                         type: 'init_tracking',
                         frame,
                         ...job,
                         shapes: correctedKeyframes.map(({ shape }) => shape),
                     }) as SAM2TrackerResults;
+                    this.#logInference(
+                        'correct', frame, startedAt, correctedKeyframes.length, objectKey, runID, direction, reinitialized, { frames: 0, anchor: frame, reused: false },
+                    );
                 } catch (error) {
                     this.#sessions.delete(sessionKey);
                     throw error;
@@ -354,6 +431,9 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                     states[targetIndex] = reinitialized.states[correctionIndex];
                     result.shapes[targetIndex] = shape;
                 }
+                contextFrames = 1;
+                anchorFrame = frame;
+                reusedContext = false;
             }
 
             endpointShapes = result.shapes.every((shape) => shape !== null) ?
@@ -454,6 +534,8 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 frame: endpointFrame,
                 shapes: endpointShapes,
                 states,
+                contextFrames,
+                anchorFrame,
             });
         } else {
             this.#sessions.delete(sessionKey);

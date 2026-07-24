@@ -10,6 +10,7 @@ import json
 import math
 import os
 import pickle
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -205,6 +206,24 @@ def _move_to_cpu(value):
     return value
 
 
+def _cuda_timing_events(device):
+    if torch.device(device).type != "cuda":
+        return None
+    return torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+
+
+def _collect_cuda_timing(timing, key, event_groups):
+    event_groups = [events for events in event_groups if events]
+    if event_groups and all(events[1].query() for events in event_groups):
+        timing[key] = round(
+            sum(events[0].elapsed_time(events[1]) for events in event_groups), 3
+        )
+
+
+def _elapsed_ms(started_at):
+    return round((time.perf_counter() - started_at) * 1000, 3)
+
+
 class ModelHandler:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -232,10 +251,17 @@ class ModelHandler:
         )
 
     @torch.inference_mode()
-    def preprocess_image(self, image):
+    def preprocess_image(self, image, timing, timing_events=None):
+        started_at = time.perf_counter()
         image = image.convert("RGB")
-        image_tensor = self.transform(image).unsqueeze(0).to(device=self.device)
+        image_tensor = self.transform(image).unsqueeze(0)
+        timing["preprocess_cpu_ms"] = _elapsed_ms(started_at)
+        if timing_events:
+            timing_events[0].record()
+        image_tensor = image_tensor.to(device=self.device)
         backbone_out = self.predictor.forward_image(image_tensor)
+        if timing_events:
+            timing_events[1].record()
         vision_feats = backbone_out["backbone_fpn"][
             -self.predictor.num_feature_levels :
         ]
@@ -304,7 +330,7 @@ class ModelHandler:
         }
 
     @torch.inference_mode()
-    def init_state(self, image, shape):
+    def init_state(self, image, shape, timing_events=None):
         mask = (
             _decode_mask(shape["points"], image.width, image.height)
             if shape["type"] == "mask"
@@ -316,6 +342,8 @@ class ModelHandler:
             mode="bilinear",
             align_corners=False,
         )
+        if timing_events:
+            timing_events[0].record()
         resized_mask = (resized_mask >= 0.5).float().to(device=self.device)
         output = self._call_predictor(
             image=image,
@@ -324,6 +352,8 @@ class ModelHandler:
             mask_inputs=resized_mask,
             output_dict={},
         )
+        if timing_events:
+            timing_events[1].record()
         return TrackingState(
             frame_idx=0,
             predictor_outputs={
@@ -342,8 +372,10 @@ class ModelHandler:
         return mask.astype(bool)
 
     @torch.inference_mode()
-    def track(self, image, state, shape_type):
+    def track(self, image, state, shape_type, timing_events=None):
         state.frame_idx += 1
+        if timing_events:
+            timing_events[0].record()
         output = self._call_predictor(
             image=image,
             frame_idx=state.frame_idx,
@@ -366,6 +398,8 @@ class ModelHandler:
             )[0, 0]
             > 0
         )
+        if timing_events:
+            timing_events[1].record()
         if not mask.any():
             return None
         mask = mask.cpu().numpy()
@@ -428,7 +462,7 @@ class StateStore:
             for key, value in serialized:
                 pipeline.set(key, value, ex=STATE_TTL_SECONDS)
             pipeline.execute()
-        return tokens
+        return tokens, sum(len(value) for _key, value in serialized)
 
     def load(self, token, image, device):
         value = self.redis.get(self._key(token))
@@ -534,10 +568,14 @@ def init_context(context):
 
 def handler(context, event):
     try:
+        request_started_at = time.perf_counter()
+        timing = {}
         data = event.body
         if not isinstance(data, dict):
             raise RequestError("request body must be an object")
+        phase_started_at = time.perf_counter()
         image = _decode_image(data)
+        timing["decode_ms"] = _elapsed_ms(phase_started_at)
         if "pos_points" in data or "neg_points" in data or "obj_bbox" in data:
             return _response(
                 context,
@@ -560,18 +598,35 @@ def handler(context, event):
         if not isinstance(shapes, list) or not isinstance(states, list):
             raise RequestError("shapes and states must be arrays")
 
-        image = context.user_data.model.preprocess_image(image)
+        encoder_events = _cuda_timing_events(context.user_data.model.device)
+        image = context.user_data.model.preprocess_image(image, timing, encoder_events)
         if not states:
-            results = {"shapes": []}
+            tracker_events = []
+            phase_started_at = time.perf_counter()
+            results = {
+                "shapes": [],
+                "device": str(context.user_data.model.device),
+                "model_id": MODEL_ID,
+            }
             initialized_states = []
             for shape in shapes:
                 shape = _validate_shape(shape, image.width, image.height)
-                state = context.user_data.model.init_state(image, shape)
+                events = _cuda_timing_events(context.user_data.model.device)
+                state = context.user_data.model.init_state(image, shape, events)
+                tracker_events.append(events)
                 results["shapes"].append(shape)
                 initialized_states.append((image, shape["type"], state))
-            results["states"] = context.user_data.state_store.create_many(
-                initialized_states
-            )
+            timing["tracker_wall_ms"] = _elapsed_ms(phase_started_at)
+            phase_started_at = time.perf_counter()
+            (
+                results["states"],
+                timing["state_bytes"],
+            ) = context.user_data.state_store.create_many(initialized_states)
+            timing["state_save_ms"] = _elapsed_ms(phase_started_at)
+            _collect_cuda_timing(timing, "encoder_gpu_ms", [encoder_events])
+            _collect_cuda_timing(timing, "tracker_gpu_ms", tracker_events)
+            timing["server_total_ms"] = _elapsed_ms(request_started_at)
+            results["timing"] = timing
             return _response(context, results)
 
         if len(shapes) != len(states) or any(shape is not None for shape in shapes):
@@ -582,20 +637,42 @@ def handler(context, event):
         if len(tokens) != len(set(tokens)):
             raise RequestError("tracker states must be unique")
 
-        results = {"shapes": []}
+        results = {
+            "shapes": [],
+            "device": str(context.user_data.model.device),
+            "model_id": MODEL_ID,
+        }
         with context.user_data.state_store.lock(tokens):
             updated_states = []
+            state_load_ms = 0
+            tracker_wall_ms = 0
+            tracker_events = []
             for token in tokens:
+                phase_started_at = time.perf_counter()
                 state, shape_type = context.user_data.state_store.load(
                     token, image, context.user_data.model.device
                 )
+                state_load_ms += _elapsed_ms(phase_started_at)
+                phase_started_at = time.perf_counter()
+                events = _cuda_timing_events(context.user_data.model.device)
                 results["shapes"].append(
-                    context.user_data.model.track(image, state, shape_type)
+                    context.user_data.model.track(image, state, shape_type, events)
                 )
+                tracker_events.append(events)
+                tracker_wall_ms += _elapsed_ms(phase_started_at)
                 updated_states.append((image, shape_type, state))
-            results["states"] = context.user_data.state_store.create_many(
-                updated_states
-            )
+            timing["state_load_ms"] = round(state_load_ms, 3)
+            timing["tracker_wall_ms"] = round(tracker_wall_ms, 3)
+            phase_started_at = time.perf_counter()
+            (
+                results["states"],
+                timing["state_bytes"],
+            ) = context.user_data.state_store.create_many(updated_states)
+            timing["state_save_ms"] = _elapsed_ms(phase_started_at)
+        _collect_cuda_timing(timing, "encoder_gpu_ms", [encoder_events])
+        _collect_cuda_timing(timing, "tracker_gpu_ms", tracker_events)
+        timing["server_total_ms"] = _elapsed_ms(request_started_at)
+        results["timing"] = timing
         return _response(context, results)
     except RequestError as error:
         context.logger.error("SAM2 tracker request rejected: %s", error)

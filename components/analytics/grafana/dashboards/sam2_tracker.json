@@ -1,0 +1,670 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P50 latency"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95 latency"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Maximum latency"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95 initialization"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Correction rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Inferred frames"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "WITH tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key')) IN (\n  SELECT tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key'))\n  FROM events\n  WHERE $__timeFilter(timestamp)\n    AND scope = 'run:sam2_inference'\n    AND JSONExtractString(payload, 'operation') = 'track'\n) AS is_sam2_prediction\nSELECT\n  concat(anyIf(JSONExtractString(payload, 'video_name'), JSONExtractString(payload, 'video_name') != ''), ' (#', toString(task_id), ')') AS Video,\n  anyIf(JSONExtractString(payload, 'device'), scope = 'run:sam2_inference') AS Device,\n  anyIf(JSONExtractString(payload, 'model_id'), scope = 'run:sam2_inference') AS Model,\n  countIf(scope = 'run:sam2_tracking' AND JSONExtractString(payload, 'outcome') = 'success') AS \"Successful runs\",\n  countIf(scope = 'run:sam2_tracking' AND JSONExtractString(payload, 'outcome') = 'failed') AS \"Failed runs\",\n  countIf(scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS \"Inferred frames\",\n  countIf(scope = 'confirm:mask' AND is_sam2_prediction AND JSONExtractString(payload, 'previous_source') = 'auto') AS \"Accepted unchanged\",\n  uniqExactIf(tuple(JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key')), scope = 'edit:mask' AND is_sam2_prediction) AS \"Corrected frames\",\n  countIf(scope = 'edit:mask' AND is_sam2_prediction) AS \"Correction sessions\",\n  round(if(\"Inferred frames\" = 0, 0, \"Corrected frames\" * 100.0 / \"Inferred frames\"), 1) AS \"Correction rate\",\n  round(quantileTDigestIf(0.5)(duration, scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track'), 1) AS \"P50 latency\",\n  round(quantileTDigestIf(0.95)(duration, scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track'), 1) AS \"P95 latency\",\n  maxIf(duration, scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS \"Maximum latency\",\n  round(quantileTDigestIf(0.95)(duration, scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'initialize'), 1) AS \"P95 initialization\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope IN ('run:sam2_tracking', 'run:sam2_inference', 'edit:mask', 'confirm:mask')\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))\nGROUP BY task_id\nHAVING \"Inferred frames\" > 0 OR \"Successful runs\" > 0 OR \"Failed runs\" > 0\nORDER BY \"Inferred frames\" DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Per-video summary",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 10
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "rawSql": "SELECT\n  $__timeInterval(timestamp) AS time,\n  round(quantileTDigest(0.5)(duration), 1) AS \"Client P50\",\n  round(quantileTDigest(0.95)(duration), 1) AS \"Client P95\",\n  round(quantileTDigestIf(0.5)(JSONExtractFloat(payload, 'server_total_ms'), JSONHas(payload, 'server_total_ms')), 1) AS \"Server P50\",\n  round(quantileTDigestIf(0.95)(JSONExtractFloat(payload, 'server_total_ms'), JSONHas(payload, 'server_total_ms')), 1) AS \"Server P95\",\n  max(duration) AS \"Client maximum\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope = 'run:sam2_inference'\n  AND JSONExtractString(payload, 'operation') = 'track'\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))\nGROUP BY time\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "SAM2 frame inference latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 10
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "WITH tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key')) IN (\n  SELECT tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key'))\n  FROM events\n  WHERE $__timeFilter(timestamp)\n    AND scope = 'run:sam2_inference'\n    AND JSONExtractString(payload, 'operation') = 'track'\n) AS is_sam2_prediction\nSELECT\n  countIf(scope = 'run:sam2_tracking' AND JSONExtractString(payload, 'outcome') = 'success') AS \"Successful runs\",\n  countIf(scope = 'run:sam2_tracking' AND JSONExtractString(payload, 'outcome') = 'failed') AS \"Failed runs\",\n  countIf(scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'track') AS \"Inferred frames\",\n  countIf(scope = 'confirm:mask' AND is_sam2_prediction AND JSONExtractString(payload, 'previous_source') = 'auto') AS \"Accepted unchanged\",\n  uniqExactIf(tuple(JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key')), scope = 'edit:mask' AND is_sam2_prediction) AS \"Corrected frames\",\n  countIf(scope = 'edit:mask' AND is_sam2_prediction) AS \"Correction sessions\",\n  round(quantileTDigestIf(0.95)(duration, scope = 'run:sam2_inference' AND JSONExtractString(payload, 'operation') = 'initialize'), 1) AS \"P95 initialization\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope IN ('run:sam2_tracking', 'run:sam2_inference', 'edit:mask', 'confirm:mask')\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))",
+          "refId": "A"
+        }
+      ],
+      "title": "Selected totals",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Latency"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Server latency"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "id": 4,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Latency"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "SELECT\n  timestamp AS Time,\n  JSONExtractString(payload, 'video_name') AS Video,\n  JSONExtractInt(payload, 'frame') AS Frame,\n  JSONExtractString(payload, 'direction') AS Direction,\n  JSONExtractString(payload, 'device') AS Device,\n  JSONExtractString(payload, 'model_id') AS Model,\n  JSONExtractInt(payload, 'object_count') AS Objects,\n  duration AS Latency,\n  JSONExtractFloat(payload, 'server_total_ms') AS \"Server latency\",\n  round(JSONExtractUInt(payload, 'state_bytes') / 1048576, 2) AS \"State MiB\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope = 'run:sam2_inference'\n  AND JSONExtractString(payload, 'operation') = 'track'\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))\nORDER BY duration DESC\nLIMIT 100",
+          "refId": "A"
+        }
+      ],
+      "title": "Slowest frame inferences",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Session reuse rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "SELECT\n  concat(any(JSONExtractString(payload, 'video_name')), ' (#', toString(task_id), ')') AS Video,\n  countIf(JSONExtractString(payload, 'operation') = 'track') AS \"Inferred frames\",\n  countIf(JSONExtractString(payload, 'operation') = 'track' AND JSONHas(payload, 'context_frames')) AS \"Instrumented frames\",\n  round(avgOrNullIf(least(greatest(JSONExtractInt(payload, 'context_frames') - 1, 0), 6), JSONExtractString(payload, 'operation') = 'track' AND JSONHas(payload, 'context_frames')), 1) AS \"Average previous frames used\",\n  maxOrNullIf(least(greatest(JSONExtractInt(payload, 'context_frames') - 1, 0), 6), JSONExtractString(payload, 'operation') = 'track' AND JSONHas(payload, 'context_frames')) AS \"Maximum previous frames used\",\n  maxOrNullIf(JSONExtractInt(payload, 'context_frames'), JSONExtractString(payload, 'operation') = 'track' AND JSONHas(payload, 'context_frames')) AS \"Maximum frames since anchor\",\n  maxOrNullIf(JSONExtractInt(payload, 'distance_from_anchor'), JSONExtractString(payload, 'operation') = 'track' AND JSONHas(payload, 'distance_from_anchor')) AS \"Maximum anchor distance\",\n  round(countIf(JSONExtractString(payload, 'operation') = 'track' AND JSONHas(payload, 'session_reused') AND JSONExtractBool(payload, 'session_reused')) * 100.0 / nullIf(\"Instrumented frames\", 0), 1) AS \"Session reuse rate\",\n  countIf(JSONExtractString(payload, 'operation') = 'correct') AS \"Correction reinitializations\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope = 'run:sam2_inference'\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))\nGROUP BY task_id\nHAVING \"Inferred frames\" > 0\nORDER BY \"Inferred frames\" DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Temporal context usage",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "SAM2 correction sessions"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "WITH tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key')) IN (\n  SELECT tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key'))\n  FROM events\n  WHERE $__timeFilter(timestamp)\n    AND scope = 'run:sam2_inference'\n    AND JSONExtractString(payload, 'operation') = 'track'\n) AS is_sam2_prediction\nSELECT\n  user_id AS \"User ID\",\n  user_name AS User,\n  countIf(scope = 'run:sam2_tracking' AND JSONExtractString(payload, 'outcome') = 'success') AS \"Successful SAM2 runs\",\n  uniqExactIf(tuple(task_id, JSONExtractInt(payload, 'frame'), JSONExtractInt(payload, 'object_key')), scope = 'edit:mask' AND is_sam2_prediction) AS \"SAM2 corrected frames\",\n  countIf(scope = 'edit:mask' AND is_sam2_prediction) AS \"SAM2 correction sessions\",\n  countIf(scope = 'confirm:mask' AND is_sam2_prediction AND JSONExtractString(payload, 'previous_source') = 'auto') AS \"SAM2 accepted unchanged\",\n  sumIf(if(JSONHas(payload, 'count'), JSONExtractUInt(payload, 'count'), 1), scope IN ('draw:object', 'paste:object', 'propagate:object')) AS \"Annotations created\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope IN ('run:sam2_tracking', 'run:sam2_inference', 'edit:mask', 'confirm:mask', 'draw:object', 'paste:object', 'propagate:object')\n  AND user_id IS NOT NULL\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))\nGROUP BY user_id, user_name\nHAVING \"Successful SAM2 runs\" > 0 OR \"SAM2 correction sessions\" > 0 OR \"SAM2 accepted unchanged\" > 0 OR \"Annotations created\" > 0\nORDER BY \"SAM2 correction sessions\" DESC, \"Annotations created\" DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "User contribution leaderboard",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "PDEE91DDB90597936"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "PDEE91DDB90597936"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "rawSql": "SELECT\n  $__timeInterval(timestamp) AS time,\n  round(quantileTDigest(0.5)(JSONExtractFloat(payload, 'decode_ms')), 1) AS \"Image decode\",\n  round(quantileTDigest(0.5)(JSONExtractFloat(payload, 'preprocess_cpu_ms')), 1) AS \"Preprocess CPU\",\n  round(quantileTDigest(0.5)(JSONExtractFloat(payload, 'state_load_ms')), 1) AS \"State load\",\n  round(quantileTDigest(0.5)(JSONExtractFloat(payload, 'encoder_gpu_ms')), 1) AS \"Encoder GPU\",\n  round(quantileTDigest(0.5)(JSONExtractFloat(payload, 'tracker_gpu_ms')), 1) AS \"Tracker GPU\",\n  round(quantileTDigest(0.5)(greatest(JSONExtractFloat(payload, 'tracker_wall_ms') - JSONExtractFloat(payload, 'tracker_gpu_ms'), 0)), 1) AS \"Tracker CPU and postprocess\",\n  round(quantileTDigest(0.5)(JSONExtractFloat(payload, 'state_save_ms')), 1) AS \"State save\"\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope = 'run:sam2_inference'\n  AND JSONExtractString(payload, 'operation') = 'track'\n  AND JSONHas(payload, 'server_total_ms')\n  AND JSONHas(payload, 'encoder_gpu_ms')\n  AND JSONHas(payload, 'tracker_gpu_ms')\n  AND (-1 IN (${videos}) OR task_id IN (${videos}))\nGROUP BY time\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "SAM2 server phase latency (P50)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "SAM2",
+    "tracking"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": "-1",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "PDEE91DDB90597936"
+        },
+        "definition": "SELECT\n  task_id AS __value,\n  concat(any(JSONExtractString(payload, 'video_name')), ' (#', toString(task_id), ')') AS __text\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope IN ('run:sam2_tracking', 'run:sam2_inference', 'edit:mask', 'confirm:mask')\n  AND task_id IS NOT NULL\nGROUP BY task_id\nORDER BY __text",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Video",
+        "multi": true,
+        "name": "videos",
+        "options": [],
+        "query": "SELECT\n  task_id AS __value,\n  concat(any(JSONExtractString(payload, 'video_name')), ' (#', toString(task_id), ')') AS __text\nFROM events\nWHERE $__timeFilter(timestamp)\n  AND scope IN ('run:sam2_tracking', 'run:sam2_inference', 'edit:mask', 'confirm:mask')\n  AND task_id IS NOT NULL\nGROUP BY task_id\nORDER BY __text",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "SAM2 Tracker",
+  "uid": "sam2-tracker",
+  "version": 4,
+  "weekStart": ""
+}

@@ -72,6 +72,16 @@ with open(path) as f:
 
 
 class LambdaGatewayTest(TestCase):
+    @mock.patch.object(
+        LambdaGateway,
+        "_http",
+        return_value={
+            id_function_state_building: functions["positive"][id_function_state_building]
+        },
+    )
+    def test_function_without_http_port_is_hidden(self, _mock_http):
+        self.assertEqual(list(LambdaGateway().list()), [])
+
     def test_function_variants_expose_an_additional_type_through_the_same_function(self):
         data = {
             "metadata": {
