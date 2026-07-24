@@ -240,6 +240,13 @@ class ModelHandler:
             device=self.device,
             vos_optimized=self.device.type == "cuda",
         )
+        if self.device.type == "cuda":
+            # SAM2ImagePredictor lacks the VOS path's clone between compiled modules.
+            self.predictor.sam_prompt_encoder.register_forward_hook(
+                lambda _module, _inputs, outputs: tuple(
+                    output.clone() for output in outputs
+                )
+            )
         self.image_predictor = SAM2ImagePredictor(self.predictor)
         self.transform = torchvision.transforms.Compose(
             [
