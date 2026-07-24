@@ -413,8 +413,9 @@ export function implementJob(Job: typeof JobClass): typeof JobClass {
         value: async function saveAnnotationsImplementation(
             this: JobClass,
             onUpdate: Parameters<typeof JobClass.prototype.annotations.save>[0],
+            replace: Parameters<typeof JobClass.prototype.annotations.save>[1],
         ): ReturnType<typeof JobClass.prototype.annotations.save> {
-            return getSaver(this).save(onUpdate);
+            return getSaver(this).save(onUpdate, replace);
         },
     });
 
@@ -1102,6 +1103,8 @@ export function implementTask(Task: typeof TaskClass): typeof TaskClass {
                 (frameFrom >= _job.startFrame && frameFrom <= _job.stopFrame) ||
                 (frameTo >= _job.startFrame && frameTo <= _job.stopFrame) ||
                 (frameFrom < _job.startFrame && frameTo > _job.stopFrame)
+            )).sort((left, right) => (
+                Math.sign(frameTo - frameFrom) * (left.startFrame - right.startFrame)
             ));
 
             for (const job of jobs) {
@@ -1212,8 +1215,9 @@ export function implementTask(Task: typeof TaskClass): typeof TaskClass {
         value: function saveAnnotationsImplementation(
             this: TaskClass,
             onUpdate: Parameters<typeof TaskClass.prototype.annotations.save>[0],
+            replace: Parameters<typeof TaskClass.prototype.annotations.save>[1],
         ): ReturnType<typeof TaskClass.prototype.annotations.save> {
-            return getSaver(this).save(onUpdate);
+            return getSaver(this).save(onUpdate, replace);
         },
     });
 

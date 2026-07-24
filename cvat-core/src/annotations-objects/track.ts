@@ -5,7 +5,7 @@
 
 import { omit } from 'lodash';
 import ObjectState, { type SerializedData } from '../object-state';
-import { ObjectType, HistoryActions } from '../enums';
+import { ObjectType, HistoryActions, Source } from '../enums';
 import type { Label } from '../labels';
 import type { SerializedTrack } from '../server-response-types';
 import { attrsAsAnObject } from '../object-utils';
@@ -25,7 +25,7 @@ export class Track extends Drawn {
         injection: AnnotationInjection,
     ) {
         super(data, clientID, color, injection);
-        this.shapes = deserializeTrackedShapes(data.shapes);
+        this.shapes = deserializeTrackedShapes(data.shapes, data.source);
     }
 
     protected withContext(): ReturnType<Drawn['withContext']> & {
@@ -55,6 +55,7 @@ export class Track extends Drawn {
             shapes: Object.keys(this.shapes).reduce((shapesAccumulator, frame) => {
                 shapesAccumulator.push({
                     type: this.shapeType,
+                    source: this.shapes[frame].source,
                     occluded: this.shapes[frame].occluded,
                     z_order: this.shapes[frame].zOrder,
                     rotation: this.shapes[frame].rotation,
@@ -113,7 +114,7 @@ export class Track extends Drawn {
                 last,
             },
             frame,
-            source: this.source,
+            source: this.shapes[prev]?.source ?? this.source,
             __internal: this.withContext(),
         };
     }
@@ -186,7 +187,7 @@ export class Track extends Drawn {
     }): void {
         this._serverId = body.id;
         this.frame = body.frame;
-        this.shapes = deserializeTrackedShapes(body.shapes);
+        this.shapes = deserializeTrackedShapes(body.shapes, this.source);
     }
 
     public clearServerId(): void {
@@ -194,6 +195,37 @@ export class Track extends Drawn {
         for (const shape of Object.values(this.shapes)) {
             shape.serverId = undefined;
         }
+    }
+
+    public confirm(frame: number): boolean {
+        if (this.lock || this.shapes[frame]?.source === Source.MANUAL) {
+            return false;
+        }
+
+        const undoShape = this.shapes[frame];
+        const redoShape = undoShape ?
+            { ...undoShape, source: Source.MANUAL } :
+            copyShape(this.get(frame), { source: Source.MANUAL });
+        this.shapes[frame] = redoShape;
+        this.history.do(
+            HistoryActions.CHANGED_SOURCE,
+            () => {
+                if (undoShape) {
+                    this.shapes[frame] = undoShape;
+                } else {
+                    delete this.shapes[frame];
+                }
+                this.updated = Date.now();
+            },
+            () => {
+                this.shapes[frame] = redoShape;
+                this.updated = Date.now();
+            },
+            [this.clientID],
+            frame,
+        );
+        this.updated = Date.now();
+        return true;
     }
 
     protected saveLabel(label: Label, frame: number): void {
@@ -320,6 +352,10 @@ export class Track extends Drawn {
     }
 
     protected appendShapeActionToHistory(actionType, frame, undoShape, redoShape, undoSource, redoSource): void {
+        if (redoShape) {
+            // eslint-disable-next-line no-param-reassign
+            redoShape.source = redoSource;
+        }
         this.history.do(
             actionType,
             () => {

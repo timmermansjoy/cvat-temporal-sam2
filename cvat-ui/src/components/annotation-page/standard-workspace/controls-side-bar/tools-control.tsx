@@ -60,6 +60,7 @@ interface StateToProps {
     canvasInstance: Canvas;
     labels: Label[];
     states: ObjectState[];
+    activatedStateID: number | null;
     activeLabelID: number | null;
     jobInstance: Job;
     isActivated: boolean;
@@ -99,6 +100,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
             annotations: {
                 zLayer: { cur: curZOrder },
                 states,
+                activatedStateID,
             },
             drawing: { activeLabelID },
         },
@@ -127,6 +129,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         activeLabelID,
         labels,
         states,
+        activatedStateID,
         canvasInstance: canvasInstance as Canvas,
         jobInstance: jobInstance as Job,
         frame,
@@ -239,6 +242,7 @@ const onRemoveAnnotations = registerPlugin();
 export class ToolsControlComponent extends React.PureComponent<Props, State> {
     private interaction: {
         id: string | null;
+        refinementTargetID: number | null;
         isAborted: boolean;
         latestPostponedEvent: Event | null;
         latestResponse: {
@@ -288,6 +292,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         this.interaction = {
             id: null,
+            refinementTargetID: null,
             isAborted: false,
             latestPostponedEvent: null,
             latestResponse: [],
@@ -309,6 +314,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         canvasInstance.html().addEventListener('canvas.interacted', this.interactionListener);
         canvasInstance.html().addEventListener('canvas.canceled', this.cancelListener);
+        window.addEventListener('keydown', this.interactionKeydownListener, true);
     }
 
     public componentDidUpdate(prevProps: Props, prevState: State): void {
@@ -347,6 +353,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             // reset flags when start interaction/tracking
             this.interaction = {
                 id: null,
+                refinementTargetID: this.interaction.refinementTargetID,
                 isAborted: false,
                 latestPostponedEvent: null,
                 latestResponse: [],
@@ -396,6 +403,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         onRemoveAnnotations(null);
         canvasInstance.html().removeEventListener('canvas.interacted', this.interactionListener);
         canvasInstance.html().removeEventListener('canvas.canceled', this.cancelListener);
+        window.removeEventListener('contextmenu', this.contextmenuDisabler);
+        window.removeEventListener('keydown', this.interactionKeydownListener, true);
     }
 
     private getSupportedTrackers(): MLModel[] {
@@ -489,6 +498,27 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         ) {
             e.preventDefault();
         }
+    };
+
+    private interactionKeydownListener = (event: KeyboardEvent): void => {
+        const { canvasInstance, isActivated } = this.props;
+        const { interactorResponseReceived, mode } = this.state;
+        const target = event.target as HTMLElement | null;
+
+        if (
+            event.key !== 'Enter' ||
+            event.defaultPrevented ||
+            !isActivated ||
+            mode !== 'interaction' ||
+            !interactorResponseReceived ||
+            target?.closest('input, textarea, [contenteditable="true"]')
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        canvasInstance.interact({ enabled: false });
     };
 
     private cancelListener = async (): Promise<void> => {
@@ -1080,7 +1110,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     private async constructFromLatestResponse(): Promise<void> {
         const { convertMasksToPolygons, thresholdValue } = this.state;
         const {
-            frame, labels, curZOrder, activeLabelID, createAnnotations,
+            frame, labels, states, curZOrder, activeLabelID, createAnnotations, updateAnnotations,
         } = this.props;
 
         if (!this.interaction.latestResponse.length) {
@@ -1099,6 +1129,30 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const objectsToConstruct = this.interaction.latestResponse.filter(
             ({ confidence }) => typeof confidence !== 'number' || confidence >= thresholdValue,
         );
+
+        if (this.interaction.refinementTargetID !== null) {
+            const refinementTarget = states.find(
+                (state) => state.clientID === this.interaction.refinementTargetID,
+            );
+            const refinedMask = objectsToConstruct.find(({ rle }) => rle.length >= 6);
+            if (!refinementTarget || refinementTarget.shapeType !== ShapeType.MASK || refinementTarget.lock) {
+                notification.warning({
+                    message: 'Could not refine the selected mask',
+                    description: 'The original mask is no longer available or is locked.',
+                });
+                return;
+            }
+            if (!refinedMask) {
+                return;
+            }
+
+            refinementTarget.points = Array.from(refinedMask.rle);
+            if (refinementTarget.outside) {
+                refinementTarget.outside = false;
+            }
+            await updateAnnotations([refinementTarget]);
+            return;
+        }
 
         let objects: ObjectState[] = [];
         if (convertMasksToPolygons) {
@@ -1271,7 +1325,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderInteractorBlock(): JSX.Element {
         const {
-            interactors, canvasInstance, labels, onInteractionStart, interactorExtras,
+            interactors, canvasInstance, labels, states, activatedStateID, onInteractionStart, interactorExtras,
         } = this.props;
         const {
             activeInteractor, activeLabelID, fetching, allowROI,
@@ -1292,6 +1346,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         const minNegVertices = activeInteractor?.params?.canvas?.minNegVertices ?? -1;
         const renderStartWithBox = activeInteractor?.params?.canvas?.startWithBoxOptional ?? false;
+        const refinementTarget = states.find((state) => (
+            state.clientID === activatedStateID &&
+            state.shapeType === ShapeType.MASK &&
+            !state.lock
+        ));
 
         const renderedInteractorExtras = interactorExtras
             .sort((a, b) => a.data.weight - b.data.weight)
@@ -1346,7 +1405,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     {allowROI && this.renderROIControls()}
                     <div>
                         <Switch
-                            checked={convertMasksToPolygons}
+                            checked={!refinementTarget && convertMasksToPolygons}
+                            disabled={!!refinementTarget}
                             onChange={(checked: boolean) => {
                                 this.setState({ convertMasksToPolygons: checked });
                             }}
@@ -1381,6 +1441,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                 activeInteractor.version < MIN_SUPPORTED_INTERACTOR_VERSION}
                             onClick={() => {
                                 if (activeInteractor && activeLabelID && labels.length) {
+                                    this.interaction.refinementTargetID = refinementTarget?.clientID ?? null;
                                     this.setState({ mode: 'interaction' });
                                     canvasInstance.cancel();
                                     const startWithBox = activeInteractor.params.canvas.startWithBoxOptional ? (
@@ -1404,7 +1465,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                 }
                             }}
                         >
-                            Interact
+                            {refinementTarget ? 'Refine selected mask' : 'Interact'}
                         </Button>
                     </Col>
                 </Row>

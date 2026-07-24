@@ -7,6 +7,7 @@ import { connect } from 'react-redux';
 import PlayerSettingsComponent from 'components/header/settings-modal/player-settings';
 import {
     changeFrameStep,
+    changeSAM2FrameCount,
     changeFrameSpeed,
     switchResetZoom,
     switchRotateAll,
@@ -18,6 +19,7 @@ import { CombinedState, FrameSpeed } from 'reducers';
 
 interface StateToProps {
     frameStep: number;
+    sam2FrameCount: number;
     frameSpeed: FrameSpeed;
     resetZoom: boolean;
     rotateAll: boolean;
@@ -28,6 +30,7 @@ interface StateToProps {
 
 interface DispatchToProps {
     onChangeFrameStep(step: number): void;
+    onChangeSAM2FrameCount(frameCount: number): void;
     onChangeFrameSpeed(speed: FrameSpeed): void;
     onSwitchResetZoom(enabled: boolean): void;
     onSwitchRotateAll(rotateAll: boolean): void;
@@ -48,6 +51,9 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
     return {
         onChangeFrameStep(step: number): void {
             dispatch(changeFrameStep(step));
+        },
+        onChangeSAM2FrameCount(frameCount: number): void {
+            dispatch(changeSAM2FrameCount(frameCount));
         },
         onChangeFrameSpeed(speed: FrameSpeed): void {
             dispatch(changeFrameSpeed(speed));

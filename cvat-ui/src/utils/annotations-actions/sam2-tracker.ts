@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { cloneDeep, range } from 'lodash';
+import { cloneDeep, isEqual, range } from 'lodash';
 
 import {
     ActionParameterType, BaseCollectionAction, Job, MLModel, ObjectState,
@@ -12,12 +12,25 @@ import {
 const core = getCore();
 
 export const SAM2_TRACKER_MODEL_ID = 'pth-facebookresearch-sam2';
+export const SAM2_TRACKER_ACTION_NAME = 'Segment Anything 2: Tracker';
 
 type Collection = Parameters<BaseCollectionAction['run']>[0]['collection'];
 type Shape = Collection['shapes'][number];
 type Track = Collection['tracks'][number];
 type TrackShape = Track['shapes'][number];
 type SAM2TrackerResults = Omit<TrackerResults, 'shapes'> & { shapes: (MinimalShape | null)[] };
+type Direction = -1 | 1;
+type SessionShape = MinimalShape & { clientID: number; groupID: number; labelID: number };
+type TrackingSession = {
+    frame: number;
+    shapes: SessionShape[];
+    states: TrackerResults['states'];
+};
+type PredictionWindow = {
+    jobKey: string;
+    objects: Pick<SessionShape, 'clientID'>[];
+    predictions: Map<number, SessionShape[]>;
+};
 
 const noChanges = {
     created: { shapes: [], tags: [], tracks: [] },
@@ -35,8 +48,12 @@ function getTrackShape(track: Track, frame: number): TrackShape | null {
 export default class SAM2TrackerAction extends BaseCollectionAction {
     #instance: Job | Task | null = null;
     #targetFrame = 0;
+    #frameCount = 5;
     #convertPolygonShapesToTracks = false;
     readonly #model: MLModel;
+    // ponytail: one active object set per job/direction; key by committed object IDs when the action API exposes them.
+    readonly #sessions = new Map<string, TrackingSession>();
+    readonly #predictionWindows: PredictionWindow[] = [];
 
     public constructor(model: MLModel) {
         super();
@@ -46,6 +63,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
     public async init(instance: Job | Task, parameters: Record<string, string | number>): Promise<void> {
         this.#instance = instance;
         this.#targetFrame = +parameters['Target frame'];
+        this.#frameCount = +parameters['Frame count'];
         this.#convertPolygonShapesToTracks = parameters['Convert polygon shapes to tracks'] === 'true';
     }
 
@@ -60,15 +78,15 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             return noChanges;
         }
 
-        if (number > this.#targetFrame) {
-            throw new Error('SAM2 tracking backward is not supported');
-        }
+        const direction: Direction = this.#targetFrame > number ? 1 : -1;
 
         const frameNumbers = this.#instance instanceof Job ?
             await this.#instance.frames.frameNumbers() : range(0, this.#instance.size);
         const targetFrames = frameNumbers
-            .filter((frame) => frame > number && frame <= this.#targetFrame)
-            .sort((left, right) => left - right);
+            .filter((frame) => (direction === 1 ?
+                frame > number && frame <= this.#targetFrame :
+                frame < number && frame >= this.#targetFrame))
+            .sort((left, right) => direction * (left - right));
         if (!targetFrames.length) {
             return noChanges;
         }
@@ -76,8 +94,22 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
         // Tracks can be interpolated on the current frame. Use the ObjectState rather
         // than the preceding serialized keyframe so SAM2 receives the visible geometry.
         const objectStates = await this.#instance.annotations.get(number, false, []);
+        const taskCollection = this.#instance instanceof Task ?
+            await this.#instance.annotations.export() : null;
+        let nextGroupID = taskCollection ? Math.max(
+            0,
+            ...taskCollection.shapes.map((shape) => shape.group ?? 0),
+            ...taskCollection.tracks.map((track) => track.group ?? 0),
+        ) : 0;
+        if (taskCollection) {
+            for (const object of ([] as (Shape | Track)[]).concat(collection.shapes, collection.tracks)) {
+                if (!object.group) {
+                    object.group = ++nextGroupID;
+                }
+            }
+        }
         const tracks = cloneDeep(collection.tracks);
-        const [initialShapes, targetObjects, targetObjectStates] =
+        const [initialShapes, targetObjects, targetObjectStates, sessionShapes] =
             ([].concat(collection.shapes, tracks) as (Shape | Track)[]).reduce((acc, object) => {
                 if (!Number.isInteger(object.clientID)) {
                     return acc;
@@ -89,14 +121,24 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 }
 
                 acc[0].push({ type: objectState.shapeType, points: [...objectState.points as number[]] });
+                acc[3].push({
+                    type: objectState.shapeType,
+                    points: [...objectState.points as number[]],
+                    clientID: object.clientID,
+                    groupID: object.group,
+                    labelID: object.label_id,
+                });
                 if (
-                    this.#convertPolygonShapesToTracks &&
                     objectState.objectType === ObjectType.SHAPE &&
-                    objectState.shapeType === ShapeType.POLYGON
+                    (
+                        objectState.shapeType === ShapeType.MASK ||
+                        (this.#convertPolygonShapesToTracks && objectState.shapeType === ShapeType.POLYGON)
+                    )
                 ) {
                     const shape = object as Required<Shape>;
                     const track: Track = {
-                        source: Source.AUTO,
+                        clientID: shape.clientID,
+                        source: shape.source,
                         attributes: [],
                         elements: [],
                         frame: shape.frame,
@@ -105,6 +147,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                         shapes: [{
                             attributes: [],
                             frame: shape.frame,
+                            source: shape.source,
                             occluded: shape.occluded,
                             outside: false,
                             points: [...objectState.points as number[]],
@@ -130,10 +173,37 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 }
 
                 return acc;
-            }, [[], [], []] as [MinimalShape[], (Shape | Track)[], ObjectState[]]);
+            }, [[], [], [], []] as [MinimalShape[], (Shape | Track)[], ObjectState[], SessionShape[]]);
 
         if (!initialShapes.length) {
             return noChanges;
+        }
+
+        const linkedTracks: Track[] = [];
+        if (taskCollection) {
+            for (const targetObject of targetObjects) {
+                if (!('shapes' in targetObject)) {
+                    continue;
+                }
+                const targetTrack = targetObject as Track;
+                const linked = taskCollection.tracks.filter((track) => (
+                    track.id !== targetTrack.id &&
+                    track.group === targetTrack.group &&
+                    track.label_id === targetTrack.label_id &&
+                    track.shapes.every((shape) => shape.type === targetTrack.shapes[0].type)
+                ));
+                linkedTracks.push(...linked);
+                const shapesByFrame = new Map(targetTrack.shapes.map((shape) => [shape.frame, shape]));
+                for (const track of linked) {
+                    for (const shape of track.shapes) {
+                        if (!shapesByFrame.has(shape.frame)) {
+                            const clonedShape = cloneDeep(shape);
+                            targetTrack.shapes.push(clonedShape);
+                            shapesByFrame.set(shape.frame, clonedShape);
+                        }
+                    }
+                }
+            }
         }
 
         const taskID = this.#instance instanceof Job ? this.#instance.taskId : this.#instance.id;
@@ -141,29 +211,52 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             throw new Error('SAM2 tracker requires a task ID');
         }
         const job = this.#instance instanceof Job ? { job: this.#instance.id } : {};
+        const jobKey = `${taskID}:${'job' in job ? job.job : 'task'}`;
+        const sessionKey = `${jobKey}:${direction}`;
+        const session = this.#sessions.get(sessionKey);
+        const sourceObjects = sessionShapes.map(({ clientID }) => ({ clientID }));
+        const previousWindow = [...this.#predictionWindows].reverse().find((window) => (
+            window.jobKey === jobKey &&
+            window.predictions.has(number) &&
+            sourceObjects.every((object) => window.objects.some((candidate) => isEqual(candidate, object)))
+        ));
 
-        onProgress('Initializing SAM2 tracker', 0);
+        let states: TrackerResults['states'];
+        if (session?.frame === number && isEqual(session.shapes, sessionShapes)) {
+            states = session.states;
+        } else {
+            onProgress('Initializing SAM2 tracker', 0);
+            if (cancelled()) {
+                return noChanges;
+            }
+            const initialized = await core.lambda.call(taskID, this.#model, {
+                type: 'init_tracking',
+                frame: number,
+                ...job,
+                shapes: initialShapes,
+            }) as SAM2TrackerResults;
+
+            if (!Array.isArray(initialized.states) || initialized.states.length !== initialShapes.length) {
+                throw new Error('SAM2 tracker returned an invalid initialization response');
+            }
+            states = initialized.states;
+        }
         if (cancelled()) {
             return noChanges;
         }
-        const initialized = await core.lambda.call(taskID, this.#model, {
-            type: 'init_tracking',
-            frame: number,
-            ...job,
-            shapes: initialShapes,
-        }) as SAM2TrackerResults;
 
-        if (!Array.isArray(initialized.states) || initialized.states.length !== initialShapes.length) {
-            throw new Error('SAM2 tracker returned an invalid initialization response');
-        }
-        if (cancelled()) {
-            return noChanges;
-        }
-
-        let states = initialized.states;
         const trackedShapes: Shape[] = [];
         let hasTrackedFrame = false;
+        let endpointShapes: SessionShape[] | null = null;
+        let trackedFrameCount = 0;
+        let endpointFrame = number;
+        const expectedTrackedFrames = Math.min(this.#frameCount, targetFrames.length);
+        const predictions = new Map<number, SessionShape[]>();
+        const supersededShapes: Shape[] = [];
         for (let index = 0; index < targetFrames.length; index++) {
+            if (trackedFrameCount === this.#frameCount) {
+                break;
+            }
             if (cancelled()) {
                 return noChanges;
             }
@@ -177,14 +270,41 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 return noChanges;
             }
 
+            const previousPredictions = previousWindow?.predictions.get(frame) ?? [];
+            if (previousPredictions.length) {
+                const statesAtFrame = await this.#instance.annotations.get(frame, false, []);
+                const matches = statesAtFrame.filter((state) => (
+                    state.objectType === ObjectType.SHAPE &&
+                    state.source === Source.AUTO &&
+                    previousPredictions.some((prediction) => (
+                        state.shapeType === prediction.type &&
+                        state.label.id === prediction.labelID &&
+                        (state.group?.id ?? 0) === prediction.groupID &&
+                        isEqual(state.points, prediction.points)
+                    ))
+                ));
+                supersededShapes.push(...await Promise.all(matches.map((state) => state.export())) as Shape[]);
+            }
+
             hasTrackedFrame = true;
-            onProgress('Tracking with SAM2', Math.round((index / targetFrames.length) * 100));
-            const result = await core.lambda.call(taskID, this.#model, {
-                type: 'track',
-                frame,
-                ...job,
-                states,
-            }) as SAM2TrackerResults;
+            trackedFrameCount++;
+            endpointFrame = frame;
+            onProgress(
+                `Tracking frame ${trackedFrameCount} of ${expectedTrackedFrames}`,
+                Math.round(((trackedFrameCount - 1) / expectedTrackedFrames) * 100),
+            );
+            let result: SAM2TrackerResults;
+            try {
+                result = await core.lambda.call(taskID, this.#model, {
+                    type: 'track',
+                    frame,
+                    ...job,
+                    states,
+                }) as SAM2TrackerResults;
+            } catch (error) {
+                this.#sessions.delete(sessionKey);
+                throw error;
+            }
             if (
                 !Array.isArray(result.states) ||
                 !Array.isArray(result.shapes) ||
@@ -194,6 +314,63 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 throw new Error('SAM2 tracker returned an invalid tracking response');
             }
             states = result.states;
+
+            const correctedKeyframes = targetObjects.flatMap((targetObject, targetIndex) => {
+                if (targetObjectStates[targetIndex].objectType !== ObjectType.TRACK) {
+                    return [];
+                }
+
+                const existing = (targetObject as Track).shapes.find((shape) => shape.frame === frame);
+                return existing && existing.source !== Source.AUTO && !existing.outside && existing.points?.length ? [{
+                    targetIndex,
+                    shape: {
+                        type: targetObjectStates[targetIndex].shapeType,
+                        points: [...existing.points],
+                    },
+                }] : [];
+            });
+            if (correctedKeyframes.length) {
+                let reinitialized: SAM2TrackerResults;
+                try {
+                    reinitialized = await core.lambda.call(taskID, this.#model, {
+                        type: 'init_tracking',
+                        frame,
+                        ...job,
+                        shapes: correctedKeyframes.map(({ shape }) => shape),
+                    }) as SAM2TrackerResults;
+                } catch (error) {
+                    this.#sessions.delete(sessionKey);
+                    throw error;
+                }
+                if (
+                    !Array.isArray(reinitialized.states) ||
+                    reinitialized.states.length !== correctedKeyframes.length
+                ) {
+                    throw new Error('SAM2 tracker returned an invalid correction response');
+                }
+
+                for (let correctionIndex = 0; correctionIndex < correctedKeyframes.length; correctionIndex++) {
+                    const { targetIndex, shape } = correctedKeyframes[correctionIndex];
+                    states[targetIndex] = reinitialized.states[correctionIndex];
+                    result.shapes[targetIndex] = shape;
+                }
+            }
+
+            endpointShapes = result.shapes.every((shape) => shape !== null) ?
+                result.shapes.map((shape, shapeIndex) => ({
+                    ...shape as MinimalShape,
+                    points: [...(shape as MinimalShape).points],
+                    clientID: sessionShapes[shapeIndex].clientID,
+                    groupID: sessionShapes[shapeIndex].groupID,
+                    labelID: sessionShapes[shapeIndex].labelID,
+                })) : null;
+            predictions.set(frame, result.shapes.flatMap((shape, shapeIndex) => (shape ? [{
+                ...shape,
+                points: [...shape.points],
+                clientID: sessionShapes[shapeIndex].clientID,
+                groupID: sessionShapes[shapeIndex].groupID,
+                labelID: sessionShapes[shapeIndex].labelID,
+            }] : [])));
             if (cancelled()) {
                 return noChanges;
             }
@@ -205,9 +382,13 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 if (targetObjectState.objectType === ObjectType.TRACK) {
                     const track = targetObject as Track;
                     const existing = track.shapes.find((shape) => shape.frame === frame);
+                    if (existing && existing.source !== Source.AUTO) {
+                        continue;
+                    }
                     const updated = {
                         attributes: cloneDeep(existing?.attributes ?? []),
                         frame,
+                        source: Source.AUTO,
                         occluded: existing?.occluded ?? targetObjectState.occluded,
                         outside: prediction === null,
                         points: prediction?.points ?? existing?.points ?? [...targetObjectState.points as number[]],
@@ -221,6 +402,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                     } else {
                         track.shapes.push(updated);
                     }
+                    track.frame = Math.min(track.frame, frame);
                 } else if (prediction) {
                     const shape = targetObject as Shape;
                     trackedShapes.push({
@@ -245,14 +427,53 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             return noChanges;
         }
 
+        if (direction === 1) {
+            const nextFrame = frameNumbers
+                .filter((frame) => frame > endpointFrame)
+                .sort((left, right) => left - right)[0];
+            if (Number.isInteger(nextFrame)) {
+                for (const track of tracks) {
+                    if (!track.shapes.some((shape) => shape.frame === nextFrame)) {
+                        const lastShape = getTrackShape(track, endpointFrame);
+                        if (lastShape) {
+                            const { id: _serverID, ...position } = cloneDeep(lastShape);
+                            track.shapes.push({
+                                ...position,
+                                frame: nextFrame,
+                                outside: true,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         onProgress('Tracking with SAM2', 100);
+        if (endpointShapes) {
+            this.#sessions.set(sessionKey, {
+                frame: endpointFrame,
+                shapes: endpointShapes,
+                states,
+            });
+        } else {
+            this.#sessions.delete(sessionKey);
+        }
+        this.#predictionWindows.push({ jobKey, objects: sourceObjects, predictions });
+        if (this.#predictionWindows.length > 20) {
+            this.#predictionWindows.shift();
+        }
         return {
             created: { shapes: trackedShapes, tags: [], tracks },
             deleted: {
-                shapes: this.#convertPolygonShapesToTracks ?
-                    collection.shapes.filter((shape) => shape.type === ShapeType.POLYGON) : [],
+                shapes: [
+                    ...supersededShapes,
+                    ...collection.shapes.filter((shape) => (
+                        shape.type === ShapeType.MASK ||
+                        (this.#convertPolygonShapesToTracks && shape.type === ShapeType.POLYGON)
+                    )),
+                ],
                 tags: [],
-                tracks: collection.tracks,
+                tracks: [...collection.tracks, ...linkedTracks],
             },
         };
     }
@@ -268,7 +489,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             tags: [],
             tracks: collection.tracks.filter((track) => {
                 const shape = getTrackShape(track, frameData.number);
-                return shape?.type === ShapeType.POLYGON && !shape.outside;
+                return shape && [ShapeType.MASK, ShapeType.POLYGON].includes(shape.type) && !shape.outside;
             }),
         };
     }
@@ -278,7 +499,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
     }
 
     public get name(): string {
-        return 'Segment Anything 2: Tracker';
+        return SAM2_TRACKER_ACTION_NAME;
     }
 
     public get parameters(): BaseCollectionAction['parameters'] {
@@ -296,6 +517,11 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 defaultValue: ({ instance }) => (instance instanceof Job ?
                     instance.stopFrame : instance.size - 1
                 ).toString(),
+            },
+            'Frame count': {
+                type: ActionParameterType.NUMBER,
+                values: ['1', '100', '1'],
+                defaultValue: '5',
             },
         };
     }

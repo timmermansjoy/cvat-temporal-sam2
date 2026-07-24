@@ -53,8 +53,10 @@ function buildDuplicatedAPI(prototype): void {
                     return result;
                 },
 
-                async save(onUpdate) {
-                    const result = await PluginRegistry.apiWrapper.call(this, prototype.annotations.save, onUpdate);
+                async save(onUpdate, replace = false) {
+                    const result = await PluginRegistry.apiWrapper.call(
+                        this, prototype.annotations.save, onUpdate, replace,
+                    );
                     return result;
                 },
 
@@ -414,6 +416,7 @@ export class Session {
         }) => Promise<void>;
         save: (
             onUpdate?: (message: string) => void,
+            replace?: boolean,
         ) => Promise<void>;
         search: (
             frameFrom: number,

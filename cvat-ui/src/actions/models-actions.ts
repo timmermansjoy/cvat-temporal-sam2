@@ -102,7 +102,7 @@ export const modelsActions = {
 export type ModelsActions = ActionUnion<typeof modelsActions>;
 
 const core = getCore();
-let sam2ActionRegistered = false;
+let sam2ActionRegistration: Promise<void> | null = null;
 
 export function getModelsAsync(query?: ModelsQuery): ThunkAction {
     return async (dispatch): Promise<void> => {
@@ -111,14 +111,13 @@ export function getModelsAsync(query?: ModelsQuery): ThunkAction {
             const result = await core.lambda.list();
             const { models, count } = result;
             const sam2Model = models.find((model) => model.id === SAM2_TRACKER_MODEL_ID);
-            if (sam2Model && !sam2ActionRegistered) {
-                sam2ActionRegistered = true;
-                try {
-                    await core.actions.register(new SAM2TrackerAction(sam2Model));
-                } catch (error) {
-                    sam2ActionRegistered = false;
-                    throw error;
-                }
+            if (sam2Model) {
+                sam2ActionRegistration ??= core.actions.register(new SAM2TrackerAction(sam2Model))
+                    .catch((error) => {
+                        sam2ActionRegistration = null;
+                        throw error;
+                    });
+                await sam2ActionRegistration;
             }
             dispatch(modelsActions.getModelsSuccess(models, count));
         } catch (error) {

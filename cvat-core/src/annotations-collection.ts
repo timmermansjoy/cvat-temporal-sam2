@@ -331,29 +331,74 @@ export default class Collection {
         const removedCollection: AnnotationObject[] = removedObjects
             .map((object) => this.objects[object.clientID]);
 
-        const imported = this.import(appended);
+        const replacementTracks = (appended.tracks ?? []).flatMap((track) => {
+            const previous = typeof track.clientID === 'number' ? this.objects[track.clientID] : null;
+            if (!(previous instanceof Shape || previous instanceof Track) || !removedCollection.includes(previous)) {
+                return [];
+            }
+
+            return [{
+                previous,
+                replacement: trackFactory(track, track.clientID, this.injection),
+            }];
+        });
+        const imported = this.import({
+            ...appended,
+            tracks: (appended.tracks ?? []).filter((track) => (
+                !replacementTracks.some(({ replacement }) => replacement.clientID === track.clientID)
+            )),
+        });
         const appendedCollection = ([] as (AnnotationObject)[]).concat(
             imported.shapes,
             imported.tags,
             imported.tracks,
             imported.intervals,
         );
+        const replacedObjects = new Set<AnnotationObject>(replacementTracks.map(({ previous }) => previous));
+        const removedWithoutReplacements = removedCollection.filter((object) => !replacedObjects.has(object));
 
-        if (appendedCollection.length === 0 && removedCollection.length === 0) {
+        if (appendedCollection.length === 0 && removedCollection.length === 0 && replacementTracks.length === 0) {
             // nothing to commit
             return;
         }
 
+        const detach = (object: Shape | Track): void => {
+            if (object instanceof Track) {
+                this.tracks.splice(this.tracks.indexOf(object), 1);
+            } else {
+                this.shapes[object.frame].splice(this.shapes[object.frame].indexOf(object), 1);
+            }
+        };
+        const attach = (object: Shape | Track): void => {
+            if (object instanceof Track) {
+                this.tracks.push(object);
+            } else {
+                this.shapes[object.frame] = this.shapes[object.frame] || [];
+                this.shapes[object.frame].push(object);
+            }
+            this.objects[object.clientID] = object;
+        };
+        const swapReplacements = (undo: boolean): void => {
+            for (const { previous, replacement } of replacementTracks) {
+                const from = undo ? replacement : previous;
+                const to = undo ? previous : replacement;
+                detach(from);
+                attach(to);
+            }
+        };
+
         let prevRemoved: boolean[] = [];
-        removedCollection.forEach((collectionObject) => {
+        removedWithoutReplacements.forEach((collectionObject) => {
             prevRemoved.push(collectionObject.removed);
             collectionObject.removed = true;
         });
+        swapReplacements(false);
 
         this.history.do(
             HistoryActions.COMMIT_ANNOTATIONS,
             () => {
-                removedCollection.forEach((collectionObject, idx) => {
+                swapReplacements(true);
+                removedWithoutReplacements.forEach((collectionObject, idx) => {
                     collectionObject.removed = prevRemoved[idx];
                 });
                 prevRemoved = [];
@@ -362,7 +407,8 @@ export default class Collection {
                 });
             },
             () => {
-                removedCollection.forEach((collectionObject) => {
+                swapReplacements(false);
+                removedWithoutReplacements.forEach((collectionObject) => {
                     prevRemoved.push(collectionObject.removed);
                     collectionObject.removed = true;
                 });
@@ -489,8 +535,9 @@ export default class Collection {
 
                 keyframes[object.frame] = {
                     type: shapeType,
+                    source: object.source,
                     frame: object.frame,
-                    points: object.shapeType === ShapeType.SKELETON ? undefined : [...object.points],
+                    points: object.shapeType === ShapeType.SKELETON ? undefined : [...object.toJSON().points],
                     occluded: object.occluded,
                     rotation: object.rotation,
                     z_order: object.zOrder,
@@ -548,6 +595,7 @@ export default class Collection {
 
                     keyframes[keyframe] = {
                         type: shapeType,
+                        source: shape.source,
                         frame: +keyframe,
                         points: object.shapeType === ShapeType.SKELETON ? undefined : [...shape.points],
                         rotation: shape.rotation,
@@ -620,8 +668,8 @@ export default class Collection {
             ),
             shapes: Object.values(keyframes),
             elements: shapeType === ShapeType.SKELETON ? mergedElements : undefined,
-            group: 0,
-            source: Source.MANUAL,
+            group: objectsForMerge.find((object) => object.group)?.group ?? 0,
+            source: objectsForMerge[0].source,
             label_id: label.id,
             attributes: Object.keys(objectsForMerge[0].attributes).reduce((accumulator, attrID) => {
                 if (!labelAttributes[attrID].mutable) {
@@ -650,11 +698,6 @@ export default class Collection {
                 );
             }
 
-            if (state.shapeType === ShapeType.MASK) {
-                throw new ArgumentError(
-                    'Merging for masks is not supported',
-                );
-            }
             return object;
         });
 
@@ -1102,7 +1145,7 @@ export default class Collection {
             ellipse: { shape: 0, track: 0 },
             cuboid: { shape: 0, track: 0 },
             skeleton: { shape: 0, track: 0 },
-            mask: { shape: 0 },
+            mask: { shape: 0, track: 0 },
             tag: 0,
             interval: {
                 count: 0,

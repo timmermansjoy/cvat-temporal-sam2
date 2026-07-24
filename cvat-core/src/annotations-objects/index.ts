@@ -24,6 +24,7 @@ import { PolygonTrack } from './polygon-track';
 import { PolylineTrack } from './polyline-track';
 import { PointsTrack } from './points-track';
 import { CuboidTrack } from './cuboid-track';
+import { MaskTrack } from './mask-track';
 // eslint-disable-next-line import/no-cycle
 import { SkeletonTrack } from './skeleton-track';
 import { AudioInterval } from './audio-interval';
@@ -40,7 +41,7 @@ export {
 };
 export {
     RectangleTrack, EllipseTrack, PolygonTrack, PolylineTrack, PointsTrack,
-    CuboidTrack, SkeletonTrack,
+    CuboidTrack, MaskTrack, SkeletonTrack,
 };
 
 export function shapeFactory(
@@ -112,6 +113,9 @@ export function trackFactory(
                 break;
             case ShapeType.CUBOID:
                 trackModel = new CuboidTrack(trackData as SerializedTrack, clientID, color, injection);
+                break;
+            case ShapeType.MASK:
+                trackModel = new MaskTrack(trackData as SerializedTrack, clientID, color, injection);
                 break;
             case ShapeType.SKELETON:
                 trackModel = new SkeletonTrack(trackData as SerializedTrack, clientID, color, injection);

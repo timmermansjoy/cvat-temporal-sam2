@@ -19,6 +19,7 @@ import redis
 import torch
 import torchvision.transforms
 from PIL import Image, UnidentifiedImageError
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from sam2.utils.misc import fill_holes_in_mask_scores
 
@@ -136,7 +137,7 @@ def _validate_shape(shape, width, height):
         if any(not _is_number(value) for value in points):
             raise RequestError("polygon coordinates must be finite numbers")
         if any(
-            x < 0 or x >= width or y < 0 or y >= height
+            x < 0 or x > width or y < 0 or y > height
             for x, y in zip(points[::2], points[1::2])
         ):
             raise RequestError("polygon coordinates are outside the image")
@@ -152,6 +153,46 @@ def _validate_token(token):
     except ValueError as error:
         raise RequestError("invalid tracker state") from error
     return token
+
+
+def _validate_prompt_points(points, field, width, height):
+    if points is None:
+        return []
+    if not isinstance(points, list):
+        raise RequestError(f"{field} must be an array")
+    result = []
+    for point in points:
+        if (
+            not isinstance(point, list)
+            or len(point) != 2
+            or any(not _is_number(value) for value in point)
+        ):
+            raise RequestError(f"{field} must contain coordinate pairs")
+        if not (0 <= point[0] <= width and 0 <= point[1] <= height):
+            raise RequestError(f"{field} contains a point outside the image")
+        result.append(point)
+    return result
+
+
+def _validate_prompt_box(boxes, width, height):
+    if boxes in (None, []):
+        return None
+    if (
+        not isinstance(boxes, list)
+        or len(boxes) != 2
+        or any(
+            not isinstance(point, list)
+            or len(point) != 2
+            or any(not _is_number(value) for value in point)
+            for point in boxes
+        )
+    ):
+        raise RequestError("obj_bbox must contain one box")
+    box = boxes[0] + boxes[1]
+    x1, y1, x2, y2 = box
+    if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+        raise RequestError("obj_bbox is outside the image")
+    return np.asarray(box, dtype=np.float32)
 
 
 def _move_to_cpu(value):
@@ -177,6 +218,7 @@ class ModelHandler:
         self.predictor = SAM2VideoPredictor.from_pretrained(
             MODEL_ID, device=self.device
         )
+        self.image_predictor = SAM2ImagePredictor(self.predictor)
         self.transform = torchvision.transforms.Compose(
             [
                 torchvision.transforms.Resize(
@@ -214,6 +256,33 @@ class ModelHandler:
                 for embedding in vision_pos_embeds
             ],
         )
+
+    @torch.inference_mode()
+    def interact(self, image, pos_points, neg_points, box):
+        point_coords = np.asarray(pos_points + neg_points, dtype=np.float32)
+        point_labels = np.asarray(
+            [1] * len(pos_points) + [0] * len(neg_points), dtype=np.int32
+        )
+        if not len(point_coords) and box is None:
+            return {"shapes": []}
+
+        self.image_predictor.set_image(image)
+        masks, scores, _logits = self.image_predictor.predict(
+            point_coords=point_coords if len(point_coords) else None,
+            point_labels=point_labels if len(point_labels) else None,
+            box=box,
+            multimask_output=True,
+        )
+        best = int(np.argmax(scores))
+        return {
+            "shapes": [
+                {
+                    "type": "mask",
+                    "points": _encode_mask(masks[best].astype(bool)),
+                    "attributes": [{"spec_id": 0, "value": str(float(scores[best]))}],
+                }
+            ]
+        }
 
     def _call_predictor(self, *, image, frame_idx, **kwargs):
         output = self.predictor.track_step(
@@ -266,7 +335,10 @@ class ModelHandler:
     @staticmethod
     def _polygon_to_mask(points, width, height):
         mask = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillPoly(mask, [np.asarray(points, dtype=np.int32).reshape((-1, 2))], 1)
+        contour = np.asarray(points, dtype=np.int32).reshape((-1, 2))
+        contour[:, 0] = np.clip(contour[:, 0], 0, width - 1)
+        contour[:, 1] = np.clip(contour[:, 1], 0, height - 1)
+        cv2.fillPoly(mask, [contour], 1)
         return mask.astype(bool)
 
     @torch.inference_mode()
@@ -329,12 +401,8 @@ class StateStore:
     def _key(token):
         return f"{STATE_KEY_PREFIX}{token}"
 
-    def create(self, *, image, shape_type, state):
-        token = uuid.uuid4().hex
-        self.save(token=token, image=image, shape_type=shape_type, state=state)
-        return token
-
-    def save(self, *, token, image, shape_type, state):
+    @staticmethod
+    def _serialize(*, image, shape_type, state):
         payload = {
             "version": 1,
             "width": image.width,
@@ -345,7 +413,22 @@ class StateStore:
         }
         buffer = io.BytesIO()
         torch.save(payload, buffer)
-        self.redis.set(self._key(token), buffer.getvalue(), ex=STATE_TTL_SECONDS)
+        return buffer.getvalue()
+
+    def create_many(self, states):
+        tokens = [uuid.uuid4().hex for _state in states]
+        serialized = [
+            (
+                self._key(token),
+                self._serialize(image=image, shape_type=shape_type, state=state),
+            )
+            for token, (image, shape_type, state) in zip(tokens, states)
+        ]
+        with self.redis.pipeline(transaction=True) as pipeline:
+            for key, value in serialized:
+                pipeline.set(key, value, ex=STATE_TTL_SECONDS)
+            pipeline.execute()
+        return tokens
 
     def load(self, token, image, device):
         value = self.redis.get(self._key(token))
@@ -454,23 +537,41 @@ def handler(context, event):
         data = event.body
         if not isinstance(data, dict):
             raise RequestError("request body must be an object")
+        image = _decode_image(data)
+        if "pos_points" in data or "neg_points" in data or "obj_bbox" in data:
+            return _response(
+                context,
+                context.user_data.model.interact(
+                    image,
+                    _validate_prompt_points(
+                        data.get("pos_points"), "pos_points", image.width, image.height
+                    ),
+                    _validate_prompt_points(
+                        data.get("neg_points"), "neg_points", image.width, image.height
+                    ),
+                    _validate_prompt_box(
+                        data.get("obj_bbox"), image.width, image.height
+                    ),
+                ),
+            )
+
         shapes = data.get("shapes")
         states = data.get("states")
         if not isinstance(shapes, list) or not isinstance(states, list):
             raise RequestError("shapes and states must be arrays")
 
-        image = context.user_data.model.preprocess_image(_decode_image(data))
+        image = context.user_data.model.preprocess_image(image)
         if not states:
-            results = {"shapes": [], "states": []}
+            results = {"shapes": []}
+            initialized_states = []
             for shape in shapes:
                 shape = _validate_shape(shape, image.width, image.height)
                 state = context.user_data.model.init_state(image, shape)
                 results["shapes"].append(shape)
-                results["states"].append(
-                    context.user_data.state_store.create(
-                        image=image, shape_type=shape["type"], state=state
-                    )
-                )
+                initialized_states.append((image, shape["type"], state))
+            results["states"] = context.user_data.state_store.create_many(
+                initialized_states
+            )
             return _response(context, results)
 
         if len(shapes) != len(states) or any(shape is not None for shape in shapes):
@@ -481,8 +582,9 @@ def handler(context, event):
         if len(tokens) != len(set(tokens)):
             raise RequestError("tracker states must be unique")
 
-        results = {"shapes": [], "states": tokens}
+        results = {"shapes": []}
         with context.user_data.state_store.lock(tokens):
+            updated_states = []
             for token in tokens:
                 state, shape_type = context.user_data.state_store.load(
                     token, image, context.user_data.model.device
@@ -490,11 +592,13 @@ def handler(context, event):
                 results["shapes"].append(
                     context.user_data.model.track(image, state, shape_type)
                 )
-                context.user_data.state_store.save(
-                    token=token, image=image, shape_type=shape_type, state=state
-                )
+                updated_states.append((image, shape_type, state))
+            results["states"] = context.user_data.state_store.create_many(
+                updated_states
+            )
         return _response(context, results)
     except RequestError as error:
+        context.logger.error("SAM2 tracker request rejected: %s", error)
         return _response(context, {"error": str(error)}, error.status_code)
     except redis.RedisError:
         context.logger.error("SAM2 tracker Redis operation failed")

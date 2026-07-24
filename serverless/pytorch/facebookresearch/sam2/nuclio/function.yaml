@@ -8,6 +8,12 @@ metadata:
   annotations:
     name: 'Segment Anything 2: Tracker'
     type: tracker
+    additional_types: interactor
+    interactor_name: 'Segment Anything 2: Interactor'
+    version: 2
+    min_pos_points: 0
+    min_neg_points: 0
+    help_message: Add positive and negative points to update a SAM2 mask
     supported_shape_types: mask, polygon
 
 spec:
@@ -24,6 +30,8 @@ spec:
   build:
     image: cvat.pth.facebookresearch.sam2
     baseImage: ubuntu:22.04
+    flags:
+      - --platform=linux/amd64
     directives:
       preCopy:
         - kind: ENV
@@ -43,12 +51,11 @@ spec:
         - kind: RUN
           value: |-
             SAM2_BUILD_CUDA=0 pip install \
-              torch==2.5.1+cpu torchvision==0.20.1+cpu \
+              torch==2.5.1 torchvision==0.20.1 \
               numpy==1.26.4 Pillow==10.4.0 \
               opencv-python-headless==4.10.0.84 redis==5.2.0 \
               huggingface-hub==0.27.1 tqdm==4.67.1 hydra-core==1.3.2 iopath==0.1.10 \
               git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4 \
-              --extra-index-url https://download.pytorch.org/whl/cpu \
               --no-cache-dir
         - kind: RUN
           value: |-

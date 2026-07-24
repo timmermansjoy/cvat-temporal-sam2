@@ -8,6 +8,7 @@ readonly COMPOSE=(
     docker compose --project-name cvat
     -f "$ROOT_DIR/docker-compose.yml"
     -f "$ROOT_DIR/components/serverless/docker-compose.serverless.yml"
+    -f "$ROOT_DIR/docker-compose.dev.yml"
 )
 
 if command -v nuctl >/dev/null; then

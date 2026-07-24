@@ -6,6 +6,7 @@
 import React from 'react';
 
 import { connect } from 'react-redux';
+import notification from 'antd/lib/notification';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 
 import ObjectsListComponent from 'components/annotation-page/standard-workspace/objects-side-bar/objects-list';
@@ -32,7 +33,9 @@ import {
     CombinedState, StatesOrdering, ColorBy, Workspace,
     ActiveControl,
 } from 'reducers';
-import { ObjectState, ObjectType, ShapeType } from 'cvat-core-wrapper';
+import {
+    ObjectState, ObjectType, ShapeType, Source,
+} from 'cvat-core-wrapper';
 import { RenderData } from 'cvat-canvas-wrapper';
 import { filterAnnotations } from 'utils/filter-annotations';
 import { registerComponentShortcuts } from 'actions/shortcuts-actions';
@@ -86,6 +89,7 @@ interface DispatchToProps {
     updateLayer(...args: Parameters<typeof updateLayerAsync>): void;
     compactLayers(...args: Parameters<typeof compactLayersAsync>): void;
     selectLayer(...args: Parameters<typeof switchZLayer>): void;
+    fetchAnnotations(): void;
 }
 
 const componentShortcuts = {
@@ -198,8 +202,8 @@ const componentShortcuts = {
         scope: ShortcutScope.OBJECTS_SIDEBAR,
     },
     CHANGE_OBJECT_COLOR: {
-        name: 'Change color',
-        description: 'Set the next color for an activated shape',
+        name: 'Confirm mask or change color',
+        description: 'Confirm an activated mask, or set the next color for another object',
         sequences: ['enter'],
         scope: ShortcutScope.OBJECTS_SIDEBAR,
     },
@@ -330,6 +334,9 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
         },
         selectLayer(...args: Parameters<typeof switchZLayer>): void {
             dispatch(switchZLayer(...args));
+        },
+        fetchAnnotations(): void {
+            dispatch(fetchAnnotationsAsync());
         },
     };
 }
@@ -667,10 +674,30 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
                     removeObject(state, event ? event.shiftKey : false);
                 }
             },
-            CHANGE_OBJECT_COLOR: (event?: KeyboardEvent) => {
+            CHANGE_OBJECT_COLOR: async (event?: KeyboardEvent) => {
                 preventDefault(event);
                 const state = activatedState();
                 if (state) {
+                    if (state.shapeType === ShapeType.MASK) {
+                        if (state.source === Source.MANUAL) {
+                            notification.info({ message: 'This mask is already confirmed' });
+                            return;
+                        }
+                        try {
+                            if (await state.confirm()) {
+                                this.props.fetchAnnotations();
+                                notification.success({ message: 'Mask confirmed' });
+                            } else {
+                                notification.warning({ message: 'Unlock the mask before confirming it' });
+                            }
+                        } catch (error) {
+                            notification.error({
+                                message: error instanceof Error ? error.message : String(error),
+                            });
+                        }
+                        return;
+                    }
+
                     if (colorBy === ColorBy.GROUP && state.group) {
                         const colorID = (colors.indexOf(state.group.color) + 1) % colors.length;
                         changeGroupColor(state.group.id, colors[colorID]);

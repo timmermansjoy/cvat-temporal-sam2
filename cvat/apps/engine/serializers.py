@@ -4133,6 +4133,7 @@ class LabeledTrackSerializerFromDB(serializers.BaseSerializer):
                 "id",
                 "type",
                 "frame",
+                "source",
                 "occluded",
                 "outside",
                 "z_order",
@@ -4178,6 +4179,9 @@ class LabeledIntervalSerializerFromDB(serializers.BaseSerializer):
 class TrackedShapeSerializer(ShapeSerializer, AttributedAnnotationSerializer):
     id = serializers.IntegerField(default=None, allow_null=True)
     frame = serializers.IntegerField(min_value=0)
+    source = serializers.ChoiceField(
+        choices=models.SourceType.choices(), allow_null=True, required=False, default=None
+    )
 
 
 class SubLabeledTrackSerializer(

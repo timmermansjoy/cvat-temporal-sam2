@@ -139,7 +139,8 @@ class AnnotationIR:
             for element in track.get("elements", [])
         ]
 
-        if len(segment_shapes) < len(track["shapes"]):
+        is_mask_track = all(shape["type"] == ShapeType.MASK for shape in track["shapes"])
+        if len(segment_shapes) < len(track["shapes"]) and not is_mask_track:
             interpolated_shapes = TrackManager.get_interpolated_shapes(
                 track, start, stop + 1, dimension
             )

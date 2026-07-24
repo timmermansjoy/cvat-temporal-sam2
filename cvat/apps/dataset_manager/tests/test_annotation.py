@@ -418,6 +418,39 @@ class TrackManagerTest(TestCase):
 
 
 class AnnotationIRTest(TestCase):
+    def test_slice_mask_track_keeps_only_explicit_keyframes(self):
+        shapes = []
+        for frame in range(5, 11):
+            shape = make_shape(frame)
+            shape.update(type=ShapeType.MASK.value, points=[1, 10, 10, 10, 10])
+            shapes.append(shape)
+
+        annotation = AnnotationIR(
+            dimension=DimensionType.DIM_2D,
+            data={
+                "tags": [],
+                "shapes": [],
+                "tracks": [{
+                    "id": 1,
+                    "frame": 5,
+                    "group": None,
+                    "source": "manual",
+                    "attributes": [],
+                    "elements": [],
+                    "label": "bag",
+                    "shapes": shapes,
+                }],
+                "intervals": [],
+            },
+        )
+
+        self.assertEqual([5], [
+            shape["frame"] for shape in annotation.slice(0, 5).data["tracks"][0]["shapes"]
+        ])
+        self.assertEqual(list(range(6, 11)), [
+            shape["frame"] for shape in annotation.slice(6, 11).data["tracks"][0]["shapes"]
+        ])
+
     def test_slice_track_does_not_duplicate_outside_frame_on_the_end(self):
         for dimension in [DimensionType.DIM_2D, DimensionType.DIM_3D]:
             with self.subTest(dimension=dimension):

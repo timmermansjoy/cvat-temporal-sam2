@@ -73,6 +73,22 @@ slogger = ServerLogManager(__name__)
 class LambdaGateway:
     NUCLIO_ROOT_URL = "/api/functions"
 
+    @staticmethod
+    def _function_variants(data):
+        yield data
+        annotations = data["metadata"]["annotations"]
+        function_id = data["metadata"]["name"]
+        for kind in filter(None, map(str.strip, annotations.get("additional_types", "").split(","))):
+            variant = deepcopy(data)
+            variant_annotations = variant["metadata"]["annotations"]
+            variant["metadata"]["name"] = f"{function_id}--{kind}"
+            variant_annotations["type"] = kind
+            variant_annotations["invoke_id"] = function_id
+            variant_annotations["name"] = annotations.get(
+                f"{kind}_name", f"{annotations.get('name', function_id)}: {kind.title()}"
+            )
+            yield variant
+
     def _http(
         self,
         method="get",
@@ -117,15 +133,19 @@ class LambdaGateway:
     def list(self):
         data = self._http(url=self.NUCLIO_ROOT_URL)
         for item in data.values():
-            try:
-                yield LambdaFunction(self, item)
-            except InvalidFunctionMetadataError:
-                slogger.glob.error("Failed to parse lambda function metadata", exc_info=True)
+            for variant in self._function_variants(item):
+                try:
+                    yield LambdaFunction(self, variant)
+                except InvalidFunctionMetadataError:
+                    slogger.glob.error("Failed to parse lambda function metadata", exc_info=True)
 
     def get(self, func_id):
-        data = self._http(url=self.NUCLIO_ROOT_URL + "/" + func_id)
-        response = LambdaFunction(self, data)
-        return response
+        base_id, separator, _kind = func_id.rpartition("--")
+        data = self._http(url=self.NUCLIO_ROOT_URL + "/" + (base_id if separator else func_id))
+        for variant in self._function_variants(data):
+            if variant["metadata"]["name"] == func_id:
+                return LambdaFunction(self, variant)
+        raise ObjectDoesNotExist(f"Lambda function {func_id!r} does not exist")
 
     def invoke(self, func, payload):
         invoke_method = {
@@ -140,7 +160,7 @@ class LambdaGateway:
             method="post",
             url="/api/function_invocations",
             data=payload,
-            headers={"x-nuclio-function-name": func.id, "x-nuclio-path": "/"},
+            headers={"x-nuclio-function-name": func.invoke_id, "x-nuclio-path": "/"},
         )
 
     def _invoke_directly(self, func, payload):
@@ -177,6 +197,7 @@ class LambdaFunction:
         self.id = data["metadata"]["name"]
         # type of the function (e.g. detector, interactor)
         meta_anno: dict[str, str] = data["metadata"]["annotations"]
+        self.invoke_id = meta_anno.get("invoke_id", self.id)
         kind = meta_anno.get("type")
         try:
             self.kind = FunctionKind(kind)
@@ -529,7 +550,10 @@ class LambdaFunction:
             if max_distance:
                 payload.update({"max_distance": max_distance})
         elif self.kind == FunctionKind.TRACKER:
-            signer = TimestampSigner(salt=f"cvat-tracker-state:{self.id}:{db_task.id}")
+            state_scope = f"job:{db_job.id}" if db_job else "task"
+            signer = TimestampSigner(
+                salt=f"cvat-tracker-state:{self.invoke_id}:{db_task.id}:{state_scope}"
+            )
 
             def prepare_shape(shape):
                 if shape is None:

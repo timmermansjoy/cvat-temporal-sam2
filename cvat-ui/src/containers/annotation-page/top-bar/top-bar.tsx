@@ -7,8 +7,11 @@ import React from 'react';
 import { connect } from 'react-redux';
 import { withRouter } from 'react-router';
 import { RouteComponentProps } from 'react-router-dom';
+import notification from 'antd/lib/notification';
+import Progress from 'antd/lib/progress';
 
 import {
+    activateObject,
     changeFrameAsync,
     changeWorkspaceAsync,
     setHoveredChapter as setHoveredChapterAction,
@@ -28,20 +31,44 @@ import {
     switchShowSearchFramesModal as switchShowSearchFramesModalAction,
     undoActionAsync,
 } from 'actions/annotation-actions';
+import { registerComponentShortcuts } from 'actions/shortcuts-actions';
 import AnnotationTopBarComponent from 'components/annotation-page/top-bar/top-bar';
 import { Canvas } from 'cvat-canvas-wrapper';
 import { Canvas3d } from 'cvat-canvas3d-wrapper';
-import { FramesMetaData, Job } from 'cvat-core-wrapper';
+import {
+    BaseCollectionAction, FramesMetaData, getCore, Job, JobType, ObjectState, ShapeType, Source, Task,
+} from 'cvat-core-wrapper';
 import {
     ActiveControl, CombinedState, FrameSpeed, NavigationType, ToolsBlockerState, Workspace,
 } from 'reducers';
 import isAbleToChangeFrame from 'utils/is-able-to-change-frame';
-import { KeyMap } from 'utils/mousetrap-react';
+import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 import { switchToolsBlockerState } from 'actions/settings-actions';
 import { writeLatestFrame } from 'utils/remember-latest-frame';
 import { finishDraw } from 'utils/drawing';
 import { toClipboard } from 'utils/to-clipboard';
 import { Chapter } from 'cvat-core/src/frames';
+import { SAM2_TRACKER_ACTION_NAME } from 'utils/annotations-actions/sam2-tracker';
+import { ShortcutScope } from 'utils/enums';
+import { subKeyMap } from 'utils/component-subkeymap';
+
+const core = getCore();
+const componentShortcuts = {
+    SAM2_TRACK_BACKWARD: {
+        name: 'SAM2: propagate frames backward',
+        description: 'Track the selected polygon or mask backward',
+        sequences: ['s'],
+        scope: ShortcutScope.STANDARD_WORKSPACE,
+    },
+    SAM2_TRACK_FORWARD: {
+        name: 'SAM2: propagate frames forward',
+        description: 'Track the selected polygon or mask forward',
+        sequences: ['g'],
+        scope: ShortcutScope.STANDARD_WORKSPACE,
+    },
+};
+
+registerComponentShortcuts(componentShortcuts);
 
 interface StateToProps {
     chapters: Chapter[];
@@ -51,6 +78,7 @@ interface StateToProps {
     frameNumber: number;
     frameFilename: string;
     frameStep: number;
+    sam2FrameCount: number;
     frameSpeed: FrameSpeed;
     frameDelay: number;
     frameFetching: boolean;
@@ -74,10 +102,13 @@ interface StateToProps {
     initialOpenGuide: boolean;
     navigationType: NavigationType;
     showSearchFrameByName: boolean;
+    objectStates: ObjectState[];
+    activatedStateID: number | null;
 }
 
 interface DispatchToProps {
-    onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): void;
+    onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): Promise<void>;
+    activateSAM2Prediction(clientID: number): void;
     onSwitchPlay(playing: boolean): void;
     switchShowSearchPallet(visible: boolean): void;
     onSaveAnnotation(): void;
@@ -128,13 +159,17 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 saving: { uploading: saving, forceExit },
                 history,
                 filters: annotationFilters,
+                states: objectStates,
+                activatedStateID,
             },
             job: { instance: jobInstance, queryParameters: { initialOpenGuide }, meta },
             canvas: { ready: canvasIsReady, instance: canvasInstance, activeControl },
             workspace,
         },
         settings: {
-            player: { frameSpeed, frameStep, showDeletedFrames },
+            player: {
+                frameSpeed, frameStep, sam2FrameCount, showDeletedFrames,
+            },
             workspace: {
                 autoSave,
                 autoSaveInterval,
@@ -158,6 +193,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         chapters,
         frameIsDeleted,
         frameStep,
+        sam2FrameCount,
         frameSpeed,
         frameDelay,
         frameFetching,
@@ -185,13 +221,24 @@ function mapStateToProps(state: CombinedState): StateToProps {
         initialOpenGuide,
         navigationType,
         showSearchFrameByName,
+        objectStates,
+        activatedStateID,
     };
 }
 
 function mapDispatchToProps(dispatch: any): DispatchToProps {
     return {
-        onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): void {
-            dispatch(changeFrameAsync(frame, fillBuffer, frameStep));
+        onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): Promise<void> {
+            return dispatch(changeFrameAsync(frame, fillBuffer, frameStep));
+        },
+        activateSAM2Prediction(clientID: number): void {
+            dispatch((innerDispatch: any, getState: () => CombinedState) => {
+                const prediction = getState().annotation.annotations.states
+                    .find((state) => state.clientID === clientID);
+                if (prediction) {
+                    innerDispatch(activateObject(prediction.clientID, null, null));
+                }
+            });
         },
         onSwitchPlay(playing: boolean): void {
             dispatch(switchPlay(playing));
@@ -260,6 +307,13 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
 }
 
 type Props = StateToProps & DispatchToProps & RouteComponentProps;
+type SAM2NavigationState = {
+    sam2Prediction?: {
+        groupID: number | null;
+        labelID: number;
+    };
+};
+
 class AnnotationTopBarContainer extends React.PureComponent<Props> {
     private inputFrameRef: React.RefObject<HTMLInputElement>;
     private autoSaveInterval: number | undefined;
@@ -301,6 +355,7 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
         });
 
         window.addEventListener('beforeunload', this.beforeUnloadCallback);
+        this.activatePendingSAM2Prediction();
     }
 
     public componentDidUpdate(prevProps: Props): void {
@@ -310,6 +365,7 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             if (this.autoSaveInterval) window.clearInterval(this.autoSaveInterval);
             this.autoSaveInterval = window.setInterval(this.autoSave.bind(this), autoSaveInterval);
         }
+        this.activatePendingSAM2Prediction();
         this.handlePlayIfNecessary();
     }
 
@@ -495,6 +551,215 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             } else {
                 searchAnnotations(jobInstance, newFrame, stopFrame, { isEmptyFrame: true });
             }
+        }
+    };
+
+    private trackingSAM2 = false;
+
+    private activatePendingSAM2Prediction = (): void => {
+        const {
+            activateSAM2Prediction, frameNumber, history, location, objectStates,
+        } = this.props;
+        const pending = (location.state as SAM2NavigationState | undefined)?.sam2Prediction;
+        if (!pending) {
+            return;
+        }
+
+        const prediction = objectStates
+            .filter((state) => (
+                state.frame === frameNumber &&
+                !state.outside &&
+                state.label.id === pending.labelID &&
+                [ShapeType.POLYGON, ShapeType.MASK].includes(state.shapeType) &&
+                (
+                    pending.groupID ?
+                        state.group?.id === pending.groupID :
+                        state.source === Source.AUTO
+                )
+            ))
+            .sort((left, right) => right.updated - left.updated)[0];
+        if (typeof prediction?.clientID === 'number') {
+            activateSAM2Prediction(prediction.clientID);
+            history.replace(`${location.pathname}${location.search}${location.hash}`);
+        }
+    };
+
+    private onTrackSAM2 = async (direction: -1 | 1): Promise<void> => {
+        const {
+            activateSAM2Prediction, activatedStateID, frameNumber, jobInstance, objectStates,
+            history, playing, onSwitchPlay, sam2FrameCount,
+        } = this.props;
+        if (this.trackingSAM2) {
+            return;
+        }
+
+        const objectState = objectStates.find((state) => state.clientID === activatedStateID) ?? objectStates
+            .filter((state) => (
+                state.frame === frameNumber && [ShapeType.POLYGON, ShapeType.MASK].includes(state.shapeType)
+            ))
+            .sort((left, right) => right.updated - left.updated)[0];
+        if (
+            !objectState ||
+            objectState.outside ||
+            ![ShapeType.POLYGON, ShapeType.MASK].includes(objectState.shapeType)
+        ) {
+            notification.warning({ message: 'Draw or select a polygon or mask before tracking' });
+            return;
+        }
+
+        this.trackingSAM2 = true;
+        const directionLabel = direction === 1 ? 'forward' : 'backward';
+        const progressKey = `sam2-tracking-${jobInstance.id}-${directionLabel}`;
+        const showProgress = (message: string, percent: number): void => {
+            notification.info({
+                key: progressKey,
+                message: `SAM2 tracking ${directionLabel}`,
+                description: (
+                    <>
+                        <Progress percent={percent} size='small' status='active' />
+                        {message}
+                    </>
+                ),
+                duration: 0,
+                placement: 'bottomRight',
+            });
+        };
+        showProgress(`Preparing up to ${sam2FrameCount} frames`, 0);
+        try {
+            const action = (await core.actions.list()).find((item) => item.name === SAM2_TRACKER_ACTION_NAME);
+            if (!(action instanceof BaseCollectionAction) || !action.isApplicableForObject(objectState)) {
+                notification.error({ key: progressKey, message: 'SAM2 tracker is unavailable' });
+                return;
+            }
+
+            const currentJobFrames = (await jobInstance.frames.frameNumbers())
+                .filter((frame) => (direction === 1 ? frame > frameNumber : frame < frameNumber))
+                .sort((left, right) => direction * (left - right));
+            let availableCurrentJobFrames = 0;
+            for (const frame of currentJobFrames) {
+                if (!(await jobInstance.frames.get(frame)).deleted) {
+                    availableCurrentJobFrames++;
+                    if (availableCurrentJobFrames === sam2FrameCount) {
+                        break;
+                    }
+                }
+            }
+
+            let actionInstance: Job | Task = jobInstance;
+            let actionObjectState = objectState;
+            let targetFrame = direction === 1 ? jobInstance.stopFrame : jobInstance.startFrame;
+            let destinationJob = jobInstance;
+            if (availableCurrentJobFrames < sam2FrameCount && jobInstance.taskId !== null) {
+                const [taskInstance] = await core.tasks.get({ id: jobInstance.taskId });
+                const taskJobs = taskInstance.jobs
+                    .filter((job) => job.type === JobType.ANNOTATION && job.parentJobId === null)
+                    .sort((left, right) => left.startFrame - right.startFrame);
+                const taskBoundary = direction === 1 ?
+                    Math.max(...taskJobs.map((job) => job.stopFrame)) :
+                    Math.min(...taskJobs.map((job) => job.startFrame));
+                if (
+                    (direction === 1 && taskBoundary > jobInstance.stopFrame) ||
+                    (direction === -1 && taskBoundary < jobInstance.startFrame)
+                ) {
+                    await jobInstance.annotations.save();
+                    const refreshedJobState = (await jobInstance.annotations.get(frameNumber, false, []))
+                        .find((state) => state.clientID === objectState.clientID);
+                    const taskStates = await taskInstance.annotations.get(frameNumber, false, []);
+                    const matchingTaskState = taskStates.find((state) => (
+                        refreshedJobState?.serverID !== null &&
+                        state.serverID === refreshedJobState?.serverID
+                    ));
+                    if (!matchingTaskState) {
+                        throw new Error('Could not continue the selected object across jobs');
+                    }
+
+                    actionInstance = taskInstance;
+                    actionObjectState = matchingTaskState;
+                    targetFrame = taskBoundary;
+                }
+            }
+
+            const firstPredictedFrame = await actionInstance.frames.search(
+                { notDeleted: true },
+                frameNumber + direction,
+                targetFrame,
+            );
+            if (
+                firstPredictedFrame === null ||
+                firstPredictedFrame === frameNumber
+            ) {
+                notification.warning({
+                    key: progressKey,
+                    message: `There is no frame to track ${direction === 1 ? 'forward' : 'backward'}`,
+                });
+                return;
+            }
+            if (actionInstance instanceof Task) {
+                const matchingJob = actionInstance.jobs.find((job) => (
+                    job.type === JobType.ANNOTATION &&
+                    job.parentJobId === null &&
+                    firstPredictedFrame >= job.startFrame &&
+                    firstPredictedFrame <= job.stopFrame
+                ));
+                if (!matchingJob) {
+                    throw new Error('The next frame is not available in an annotation job');
+                }
+                destinationJob = matchingJob;
+            } else if (!isAbleToChangeFrame(firstPredictedFrame)) {
+                notification.warning({
+                    key: progressKey,
+                    message: `There is no frame to track ${direction === 1 ? 'forward' : 'backward'}`,
+                });
+                return;
+            }
+
+            await core.actions.call(actionInstance, action, {
+                'Convert polygon shapes to tracks': 'false',
+                'Target frame': String(targetFrame),
+                'Frame count': String(sam2FrameCount),
+            }, frameNumber, [actionObjectState], showProgress, () => false);
+            let semanticGroupID = objectState.group?.id ?? null;
+            if (actionInstance instanceof Task) {
+                const prediction = (await actionInstance.annotations.get(firstPredictedFrame, false, []))
+                    .find((state) => state.clientID === actionObjectState.clientID);
+                semanticGroupID = prediction?.group?.id ?? semanticGroupID;
+                await actionInstance.annotations.save(undefined, true);
+            }
+            if (playing) {
+                onSwitchPlay(false);
+            }
+            if (destinationJob.id === jobInstance.id) {
+                if (actionInstance instanceof Task) {
+                    await jobInstance.annotations.clear({ reload: true });
+                }
+                await this.changeFrame(firstPredictedFrame);
+                activateSAM2Prediction(objectState.clientID);
+            } else {
+                writeLatestFrame(destinationJob.id, firstPredictedFrame);
+                history.push(
+                    `/tasks/${jobInstance.taskId}/jobs/${destinationJob.id}?frame=${firstPredictedFrame}`,
+                    {
+                        sam2Prediction: {
+                            groupID: semanticGroupID,
+                            labelID: objectState.label.id,
+                        },
+                    } satisfies SAM2NavigationState,
+                );
+            }
+            notification.success({
+                key: progressKey,
+                message: `SAM2 predictions ready ${directionLabel}`,
+                description: `Opened frame ${firstPredictedFrame}`,
+                duration: 2,
+                placement: 'bottomRight',
+            });
+        } catch (error) {
+            notification.error({
+                key: progressKey,
+                message: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            this.trackingSAM2 = false;
         }
     };
 
@@ -690,11 +955,12 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
         }
     }
 
-    private changeFrame(frame: number): void {
+    private changeFrame(frame: number): Promise<void> {
         const { onChangeFrame } = this.props;
         if (isAbleToChangeFrame(frame)) {
-            onChangeFrame(frame);
+            return onChangeFrame(frame);
         }
+        return Promise.resolve();
     }
 
     public render(): JSX.Element {
@@ -724,8 +990,9 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             switchShowSearchPallet,
             showSearchFrameByName,
         } = this.props;
+        const sam2KeyMap = workspace === Workspace.STANDARD ? subKeyMap(componentShortcuts, keyMap) : {};
 
-        return (
+        const topBar = (
             <AnnotationTopBarComponent
                 showStatistics={this.showStatistics}
                 showFilters={this.showFilters}
@@ -789,6 +1056,19 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 jobInstance={jobInstance}
                 activeControl={activeControl}
             />
+        );
+
+        return (
+            <>
+                <GlobalHotKeys
+                    keyMap={sam2KeyMap}
+                    handlers={{
+                        SAM2_TRACK_BACKWARD: () => { this.onTrackSAM2(-1); },
+                        SAM2_TRACK_FORWARD: () => { this.onTrackSAM2(1); },
+                    }}
+                />
+                {topBar}
+            </>
         );
     }
 }

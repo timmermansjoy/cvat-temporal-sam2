@@ -33,7 +33,7 @@ export class AudioInterval extends ScoredMixin(AnnotationBase) {
         export: () => SerializedInterval;
     } {
         return {
-            delete: this.delete.bind(this),
+            ...super.withContext(),
             save: this.save.bind(this),
             export: this.toJSON.bind(this),
         };

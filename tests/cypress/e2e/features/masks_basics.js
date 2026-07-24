@@ -125,6 +125,37 @@ context('Manipulations with masks', { scrollBehavior: false }, () => {
             cy.get('#cvat_canvas_shape_2').should('exist').and('be.visible');
         });
 
+        it('Merge mask segments across an occlusion into one track', () => {
+            cy.startMaskDrawing();
+            cy.drawMask(drawingActions);
+            cy.finishMaskDrawing();
+
+            cy.goCheckFrameNumber(2);
+            cy.startMaskDrawing();
+            cy.drawMask(drawingActions);
+            cy.finishMaskDrawing();
+
+            cy.get('.cvat-merge-control').click();
+            cy.get('#cvat_canvas_shape_2').click();
+            cy.get('#cvat_canvas_shape_2')
+                .should('have.class', 'cvat_canvas_shape_merging')
+                .and('have.css', 'filter')
+                .and('not.equal', 'none');
+            cy.goCheckFrameNumber(0);
+            cy.get('#cvat_canvas_shape_1').click();
+            cy.get('.cvat-merge-control').click();
+
+            cy.get('#cvat_canvas_wrapper').should('not.have.css', 'cursor', 'copy');
+            cy.get('.cvat-objects-sidebar-state-item')
+                .should('have.length', 1)
+                .and('contain', 'MASK TRACK');
+            cy.get('.cvat_canvas_shape').should('be.visible');
+            cy.goCheckFrameNumber(1);
+            cy.get('.cvat_canvas_shape').should('be.hidden');
+            cy.goCheckFrameNumber(2);
+            cy.get('.cvat_canvas_shape').should('be.visible');
+        });
+
         it('Check hidden mask still invisible after changing frame/opacity', () => {
             cy.startMaskDrawing();
             cy.drawMask(drawingActions);

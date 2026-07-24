@@ -144,15 +144,46 @@ Both SAM2 tracker implementations provide similar user experiences with slight d
 
 ### Running the Nuclio SAM2.1 Tracker
 
-The Nuclio tracker can be applied to polygons and masks. Use the existing Segment Anything (SAM) interactor to
-create a seed polygon or mask, if needed.
-To run the tracker on an object, open the object menu and click
-**Run annotation action**.
+The Nuclio deployment exposes the same loaded SAM2 model as both an interactor
+and a tracker. In the standard workspace, select
+**Segment Anything 2: Interactor**, choose a label, and identify the object:
 
-<img src="/images/sam2_tracker_run_shape_action.png" style="max-width: 200px; padding: 16px;">
+1. Left-click to add a positive point.
+1. Right-click to add a negative point.
+1. Review the mask, which updates after every point.
+1. Press **Enter** to accept the mask on the current frame, or **Esc** to cancel.
 
-Alternatively, you can use a hotkey: select the object and press **Ctrl + E** (default shortcut).
-When the modal opens, choose **Segment Anything 2: Tracker** from **Select action**:
+With that mask selected, use the frame-by-frame tracking shortcuts:
+
+| Key | Action |
+| --- | --- |
+| **S** | Track backward and open the first prediction |
+| **D** | Move one frame backward |
+| **F** | Move one frame forward |
+| **G** | Track forward and open the first prediction |
+
+`S` and `G` run only when pressed; tracking does not start automatically.
+Their keys are configurable in CVAT's shortcut settings, and the number of
+frames is configurable with **SAM2 shortcut frame count** under **Settings →
+Player**. Press **Enter** with a
+generated mask selected to confirm it; confirmed masks are never replaced by
+later tracking. If you correct a generated mask and run the shortcut again,
+the correction becomes the new temporal seed and only untouched predictions
+from the previous shortcut window are replaced.
+
+If tracking loses an object during an occlusion and you create a new mask when
+it reappears, use CVAT's native **Merge shapes/tracks** tool:
+
+1. Press **M** and click the mask before the occlusion.
+1. Navigate to the reappearing mask and click it.
+1. Press **M** again to finish.
+
+CVAT replaces both segments with one mask track. Select that track and continue
+with **S** or **G**. The merge is undoable.
+
+Existing polygons and masks can also seed tracking. For a longer or multi-object
+batch, open the object menu and click **Run annotation action**, or press
+**Ctrl + E**, then choose **Segment Anything 2: Tracker**:
 
 <img src="/images/sam2_tracker_run_shape_action_modal.png" style="max-width: 500px; padding: 16px;">
 
@@ -233,12 +264,50 @@ The SAM2 tracker supports polygons and masks but not rectangles.
 
 ## Tracker parameters
 
-- **Target frame**: Objects will be tracked up to this frame. Must be greater than the current frame
+- **Target frame**: Objects will be tracked toward this frame, forward or backward.
+- **Frame count**: Maximum number of available frames to predict in one action.
+The shortcut workflow uses the value configured under **Settings → Player**.
 - **Convert polygon shapes to tracks**: When enabled, all visible polygon shapes in the current frame will be converted
 to tracks before tracking begins. Use this option if you need tracks as the final output but started with shapes,
 produced for example by interactors (e.g. SAM2 or another one).
 
-Polygon seeds can become tracks when this option is enabled. Masks remain per-frame shapes.
+Polygon seeds can become tracks when this option is enabled. Temporal masks are
+stored as explicit keyframes in a non-interpolating mask track.
+
+## Measuring tracking accuracy
+
+The bundled benchmark can use a saved CVAT mask track or linked object as human ground truth.
+Every frame in the chosen range must contain a visible mask marked as manual or
+corrected; automatic predictions are excluded.
+
+Enter a CVAT API token without placing it in shell history:
+
+```console
+read -s CVAT_TOKEN
+export CVAT_TOKEN
+```
+
+Then run:
+
+```console
+python3 serverless/pytorch/facebookresearch/sam2/nuclio/benchmark.py \
+    --endpoint http://localhost:32768 \
+    --cvat-url http://localhost:8081 \
+    --cvat-task <task-id> \
+    --cvat-group <linked-id> \
+    --cvat-start <first-frame> \
+    --cvat-stop <last-frame> \
+    --require-mean-iou 0.85
+```
+
+`--cvat-group` is the internal annotation `group` value returned by CVAT's API;
+the benchmark merges its job-local tracks when the range crosses job
+boundaries. For a single job or an ungrouped object, use
+`--cvat-track <server-track-id>` instead.
+
+The report includes forward and reverse mean/minimum IoU, frame latency, and
+concurrent-chain throughput. The command exits unsuccessfully when either
+direction is below the required mean IoU.
 
 ## See Also
 

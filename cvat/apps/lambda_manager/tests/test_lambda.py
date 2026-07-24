@@ -9,7 +9,7 @@ import json
 import os
 from collections import Counter
 from itertools import groupby
-from unittest import mock, skip
+from unittest import TestCase, mock, skip
 
 import requests
 from django.contrib.auth.models import Group, User
@@ -26,6 +26,7 @@ from cvat.apps.engine.tests.utils import (
     generate_image_file,
     get_paginated_collection,
 )
+from cvat.apps.lambda_manager.views import LambdaGateway
 
 LAMBDA_ROOT_PATH = "/api/lambda"
 LAMBDA_FUNCTIONS_PATH = f"{LAMBDA_ROOT_PATH}/functions"
@@ -68,6 +69,29 @@ with open(path) as f:
 path = os.path.join(os.path.dirname(__file__), "assets", "functions.json")
 with open(path) as f:
     functions = json.load(f)
+
+
+class LambdaGatewayTest(TestCase):
+    def test_function_variants_expose_an_additional_type_through_the_same_function(self):
+        data = {
+            "metadata": {
+                "name": "sam2",
+                "annotations": {
+                    "name": "SAM2 Tracker",
+                    "type": "tracker",
+                    "additional_types": "interactor",
+                    "interactor_name": "SAM2 Interactor",
+                },
+            },
+        }
+
+        tracker, interactor = LambdaGateway._function_variants(data)
+
+        self.assertEqual(tracker["metadata"]["name"], "sam2")
+        self.assertEqual(interactor["metadata"]["name"], "sam2--interactor")
+        self.assertEqual(interactor["metadata"]["annotations"]["type"], "interactor")
+        self.assertEqual(interactor["metadata"]["annotations"]["invoke_id"], "sam2")
+        self.assertEqual(interactor["metadata"]["annotations"]["name"], "SAM2 Interactor")
 
 
 class _LambdaTestCaseBase(ApiTestBase):
@@ -991,6 +1015,38 @@ class LambdaTestCases(_LambdaTestCaseBase):
             self.admin,
             data={
                 "task": self.assigneed_to_user_task["id"],
+                "frame": 1,
+                "states": response.json()["states"],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid or expired tracker state", response.content.decode("UTF-8"))
+
+    def test_api_v2_lambda_functions_create_tracker_state_from_another_job_scope(self):
+        [job] = get_paginated_collection(
+            lambda page: self._get_request(
+                "/api/jobs",
+                self.admin,
+                query_params={"task_id": self.main_task["id"], "page": page},
+            )
+        )
+        response = self._post_request(
+            f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker}",
+            self.admin,
+            data={
+                "task": self.main_task["id"],
+                "job": job["id"],
+                "frame": 0,
+                "shapes": [{"type": "rectangle", "points": [12.12, 34.45, 54.0, 76.12]}],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self._post_request(
+            f"{LAMBDA_FUNCTIONS_PATH}/{id_function_tracker}",
+            self.admin,
+            data={
+                "task": self.main_task["id"],
                 "frame": 1,
                 "states": response.json()["states"],
             },

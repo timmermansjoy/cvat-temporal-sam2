@@ -1650,6 +1650,9 @@ class LabeledTrackAttributeVal(AttributeVal):
 
 class TrackedShape(FrameAnnotationMixin, ShapeAnnotationMixin):
     id = models.BigAutoField(primary_key=True)
+    source = models.CharField(
+        max_length=16, choices=SourceType.choices(), default=None, null=True
+    )
     track = models.ForeignKey(
         LabeledTrack, on_delete=models.CASCADE, related_name="shapes", related_query_name="shape"
     )

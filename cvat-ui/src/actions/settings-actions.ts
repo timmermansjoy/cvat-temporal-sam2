@@ -31,6 +31,7 @@ export enum SettingsActionTypes {
     CHANGE_SHOW_UNLABELED_REGIONS = 'CHANGE_SHOW_UNLABELED_REGIONS',
     CHANGE_SHOW_GROUND_TRUTH = 'CHANGE_SHOW_GROUND_TRUTH',
     CHANGE_FRAME_STEP = 'CHANGE_FRAME_STEP',
+    CHANGE_SAM2_FRAME_COUNT = 'CHANGE_SAM2_FRAME_COUNT',
     CHANGE_FRAME_SPEED = 'CHANGE_FRAME_SPEED',
     SWITCH_RESET_ZOOM = 'SWITCH_RESET_ZOOM',
     SWITCH_SMOOTH_IMAGE = 'SWITCH_SMOOTH_IMAGE',
@@ -186,6 +187,15 @@ export function changeFrameStep(frameStep: number): AnyAction {
         type: SettingsActionTypes.CHANGE_FRAME_STEP,
         payload: {
             frameStep,
+        },
+    };
+}
+
+export function changeSAM2FrameCount(sam2FrameCount: number): AnyAction {
+    return {
+        type: SettingsActionTypes.CHANGE_SAM2_FRAME_COUNT,
+        payload: {
+            sam2FrameCount,
         },
     };
 }
@@ -492,7 +502,9 @@ export function restoreSettingsAsync(): ThunkAction {
 
             Object.entries(loadedSettings.shortcuts.keyMap).forEach(([key, value]) => {
                 if (key in updateKeyMap) {
-                    updateKeyMap[key].sequences = (value as { sequences: string[] }).sequences;
+                    const { sequences } = value as { sequences: string[] };
+                    updateKeyMap[key].sequences = key === 'SWITCH_GROUP_MODE_STANDARD_CONTROLS' ?
+                        sequences.map((sequence) => (sequence === 'g' ? 'alt+g' : sequence)) : sequences;
                 }
             });
 

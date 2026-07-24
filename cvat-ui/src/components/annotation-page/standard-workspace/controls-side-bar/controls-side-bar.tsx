@@ -95,7 +95,7 @@ const componentShortcuts = {
     SWITCH_GROUP_MODE_STANDARD_CONTROLS: {
         name: 'Group mode',
         description: 'Activate or deactivate mode to grouping shapes',
-        sequences: ['g'],
+        sequences: ['alt+g'],
         scope: ShortcutScope.STANDARD_WORKSPACE_CONTROLS,
     },
     RESET_GROUP_STANDARD_CONTROLS: {

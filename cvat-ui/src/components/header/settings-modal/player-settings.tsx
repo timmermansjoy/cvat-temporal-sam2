@@ -23,6 +23,7 @@ import { usePlugins } from 'utils/hooks';
 
 interface Props {
     frameStep: number;
+    sam2FrameCount: number;
     frameSpeed: FrameSpeed;
     resetZoom: boolean;
     rotateAll: boolean;
@@ -30,6 +31,7 @@ interface Props {
     showDeletedFrames: boolean;
     canvasBackgroundColor: string;
     onChangeFrameStep(step: number): void;
+    onChangeSAM2FrameCount(frameCount: number): void;
     onChangeFrameSpeed(speed: FrameSpeed): void;
     onSwitchResetZoom(enabled: boolean): void;
     onSwitchRotateAll(rotateAll: boolean): void;
@@ -41,6 +43,7 @@ interface Props {
 export default function PlayerSettingsComponent(props: Props): JSX.Element {
     const {
         frameStep,
+        sam2FrameCount,
         frameSpeed,
         resetZoom,
         rotateAll,
@@ -48,6 +51,7 @@ export default function PlayerSettingsComponent(props: Props): JSX.Element {
         showDeletedFrames,
         canvasBackgroundColor,
         onChangeFrameStep,
+        onChangeSAM2FrameCount,
         onChangeFrameSpeed,
         onSwitchResetZoom,
         onSwitchRotateAll,
@@ -87,6 +91,27 @@ export default function PlayerSettingsComponent(props: Props): JSX.Element {
             </Col>
         </Row>
     ), 0]);
+
+    items.push([(
+        <Row key='sam2-frame-count' align='bottom' className='cvat-player-setting'>
+            <Col>
+                <Text className='cvat-text-color'> SAM2 shortcut frame count </Text>
+                <InputNumber
+                    min={1}
+                    max={100}
+                    value={sam2FrameCount}
+                    onChange={(value: number | undefined | string | null): void => {
+                        if (typeof value !== 'undefined' && value !== null) {
+                            onChangeSAM2FrameCount(Math.floor(clamp(+value, 1, 100)));
+                        }
+                    }}
+                />
+            </Col>
+            <Col offset={1}>
+                <Text type='secondary'>Maximum frames tracked when pressing S or G</Text>
+            </Col>
+        </Row>
+    ), 5]);
 
     items.push([(
         <Row key='player-speed' align='middle' className='cvat-player-settings-speed cvat-player-setting'>

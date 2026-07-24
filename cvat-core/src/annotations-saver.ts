@@ -382,14 +382,14 @@ export default class AnnotationsSaver {
         }
     }
 
-    async save(onUpdateArg?: (message: string) => void): Promise<void> {
+    async save(onUpdateArg?: (message: string) => void, replace = false): Promise<void> {
         const onUpdate = typeof onUpdateArg === 'function' ? onUpdateArg : (message) => {
             console.log(message);
         };
 
         const exported = this.collection.export();
         const { flush } = this.collection;
-        if (flush) {
+        if (flush || replace) {
             onUpdate('Collection is being saved on the server');
             // remove server IDs if there are any, annotations will be rewritten
             const indexes = this._extractClientIDs(exported);
@@ -402,7 +402,9 @@ export default class AnnotationsSaver {
             const savedData = await this._put(exported);
             this.collection.flush = false;
 
-            this._updateSavedObjects(savedData, indexes);
+            if (!replace) {
+                this._updateSavedObjects(savedData, indexes);
+            }
             this.initialObjects = {
                 shapes: new Map(),
                 tracks: new Map(),

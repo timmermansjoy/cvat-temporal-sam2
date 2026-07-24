@@ -840,6 +840,7 @@ class JobAnnotation:
                     "id",
                     "frame",
                     "outside",
+                    "source",
                 )
                 .order_by("track_id", "frame")
                 .iterator(chunk_size=settings.DEFAULT_DB_ANNO_CHUNK_SIZE)

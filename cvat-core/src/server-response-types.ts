@@ -454,6 +454,7 @@ export interface SerializedTrack {
         id?: number;
         points?: number[];
         frame: number;
+        source?: Source | null;
         occluded: boolean;
         outside: boolean;
         rotation: number;

@@ -127,6 +127,11 @@ polyline.cvat_canvas_shape_selection {
     }
 }
 
+image.cvat_canvas_shape_merging {
+    filter: drop-shadow(0 0 2px #1890ff) drop-shadow(0 0 6px #1890ff);
+    opacity: 1 !important;
+}
+
 polyline.cvat_canvas_shape_merging {
     @extend .cvat_shape_action_dasharray;
     @extend .cvat_shape_action_opacity;

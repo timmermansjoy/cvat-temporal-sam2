@@ -20,6 +20,7 @@ export function copyShape(state: CopyShapeState, data: Partial<TrackedShape> = {
         outside: state.outside,
         attributes: new Map(),
         ...data,
+        source: data.source ?? state.source,
     };
 }
 
@@ -38,10 +39,14 @@ export function serializeAttributes(attributes: Map<number, string>): Serialized
     }, []);
 }
 
-export function deserializeTrackedShapes(shapes: SerializedTrack['shapes']): Record<number, TrackedShape> {
+export function deserializeTrackedShapes(
+    shapes: SerializedTrack['shapes'],
+    fallbackSource: Source,
+): Record<number, TrackedShape> {
     return shapes.reduce((acc, shape) => {
         acc[shape.frame] = {
             serverId: shape.id,
+            source: shape.source ?? fallbackSource,
             occluded: shape.occluded,
             zOrder: shape.z_order,
             points: shape.points,

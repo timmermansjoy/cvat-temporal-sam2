@@ -5,7 +5,7 @@
 
 import type AnnotationHistory from '../annotations-history';
 import type { Label } from '../labels';
-import type { DimensionType, JobType } from '../enums';
+import type { DimensionType, JobType, Source } from '../enums';
 import type { MaskShape } from './mask-shape';
 
 export type FrameInfo = {
@@ -40,6 +40,7 @@ export type AnnotationInjection = BasicInjection & {
 
 export interface TrackedShape {
     serverId?: number;
+    source: Source;
     occluded: boolean;
     outside: boolean;
     rotation: number;

@@ -526,7 +526,7 @@ class CommonData(InstanceLabelData):
             tracked_shape["attributes"] += track["attributes"]
             tracked_shape["track_id"] = track["track_id"] if self._use_server_track_ids else idx
             tracked_shape["group"] = track["group"]
-            tracked_shape["source"] = track["source"]
+            tracked_shape["source"] = tracked_shape.get("source") or track["source"]
             tracked_shape["label_id"] = track["label_id"]
 
         return CommonData.Track(
@@ -1441,7 +1441,7 @@ class ProjectData(InstanceLabelData):
             tracked_shape["attributes"] += track["attributes"]
             tracked_shape["track_id"] = track["track_id"] if self._use_server_track_ids else idx
             tracked_shape["group"] = track["group"]
-            tracked_shape["source"] = track["source"]
+            tracked_shape["source"] = tracked_shape.get("source") or track["source"]
             tracked_shape["label_id"] = track["label_id"]
 
         return ProjectData.Track(

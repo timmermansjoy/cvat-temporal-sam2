@@ -52,6 +52,7 @@ const defaultState: SettingsState = {
     player: {
         canvasBackgroundColor: '#ffffff',
         frameStep: 10,
+        sam2FrameCount: 5,
         frameSpeed: FrameSpeed.Usual,
         resetZoom: false,
         rotateAll: false,
@@ -198,6 +199,15 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 player: {
                     ...state.player,
                     frameStep: action.payload.frameStep,
+                },
+            };
+        }
+        case SettingsActionTypes.CHANGE_SAM2_FRAME_COUNT: {
+            return {
+                ...state,
+                player: {
+                    ...state.player,
+                    sam2FrameCount: action.payload.sam2FrameCount,
                 },
             };
         }

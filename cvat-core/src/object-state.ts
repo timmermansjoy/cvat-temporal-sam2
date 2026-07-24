@@ -49,6 +49,7 @@ export interface SerializedData {
     __internal?: {
         save: (objectState: ObjectState) => ObjectState;
         delete: (frame: number, force: boolean) => boolean;
+        confirm: (frame: number) => boolean;
     };
 }
 
@@ -56,6 +57,7 @@ export default class ObjectState {
     private readonly __internal: {
         save: (objectState: ObjectState) => ObjectState;
         delete: (frame: number, force: boolean) => boolean;
+        confirm: (frame: number) => boolean;
     };
 
     public readonly updateFlags: UpdateFlags;
@@ -555,6 +557,11 @@ export default class ObjectState {
         return result;
     }
 
+    async confirm(): Promise<boolean> {
+        const result = await PluginRegistry.apiWrapper.call(this, ObjectState.prototype.confirm);
+        return result;
+    }
+
     async export(): Promise<SerializedShape | SerializedTrack | SerializedTag> {
         const result = await PluginRegistry.apiWrapper.call(this, ObjectState.prototype.export);
         return result;
@@ -594,6 +601,17 @@ Object.defineProperty(ObjectState.prototype.delete, 'implementation', {
         }
 
         throw new Error('Could not delete object state. Context is not provided.');
+    },
+    writable: false,
+});
+
+Object.defineProperty(ObjectState.prototype.confirm, 'implementation', {
+    value: function confirmImplementation(): boolean {
+        if (this.__internal && this.__internal.confirm) {
+            return this.__internal.confirm(this.frame);
+        }
+
+        throw new Error('Could not confirm object state. Context is not provided.');
     },
     writable: false,
 });

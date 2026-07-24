@@ -11635,6 +11635,9 @@ components:
         id:
           type: integer
           nullable: true
+        source:
+          type: string
+          nullable: true
         frame:
           type: integer
           minimum: 0
@@ -11673,6 +11676,9 @@ components:
           default: []
         id:
           type: integer
+          nullable: true
+        source:
+          type: string
           nullable: true
         frame:
           type: integer

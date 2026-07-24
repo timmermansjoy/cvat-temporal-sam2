@@ -466,6 +466,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
     };
 
     private onMergeDone = (objects: any[] | null, duration?: number): void => {
+        this.canvas.style.cursor = '';
+        this.mode = Mode.IDLE;
         if (objects) {
             const event: CustomEvent = new CustomEvent('canvas.merged', {
                 bubbles: false,
@@ -476,7 +478,6 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 },
             });
 
-            this.mode = Mode.IDLE;
             this.canvas.dispatchEvent(event);
         } else {
             this.dispatchCanceledEvent();
@@ -705,6 +706,16 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
     private onFindObject = (e: MouseEvent): void => {
         if (e.button === 0) {
+            const clientID = Number((e.target as SVGElement).getAttribute('clientID'));
+            const mask = this.controller.objects.find((state) => (
+                state.clientID === clientID && state.shapeType === 'mask'
+            ));
+            if (this.mode === Mode.MERGE && mask) {
+                this.mergeHandler.select(mask);
+                e.preventDefault();
+                return;
+            }
+
             const { offset } = this.controller.geometry;
             const [x, y] = translateToSVG(this.content, [e.clientX, e.clientY]);
             const event: CustomEvent = new CustomEvent('canvas.find', {

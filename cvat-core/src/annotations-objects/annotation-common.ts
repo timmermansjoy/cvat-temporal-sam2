@@ -215,10 +215,36 @@ export class AnnotationBase extends AnnotationContext {
 
     protected withContext(): {
         delete: AnnotationBase['delete'];
+        confirm: AnnotationBase['confirm'];
     } {
         return {
             delete: this.delete.bind(this),
+            confirm: this.confirm.bind(this),
         };
+    }
+
+    public confirm(frame: number | null): boolean {
+        if (this.lock || this.source === Source.MANUAL) {
+            return false;
+        }
+
+        const undoSource = this.source;
+        this.source = Source.MANUAL;
+        this.history.do(
+            HistoryActions.CHANGED_SOURCE,
+            () => {
+                this.source = undoSource;
+                this.updated = Date.now();
+            },
+            () => {
+                this.source = Source.MANUAL;
+                this.updated = Date.now();
+            },
+            [this.clientID],
+            frame,
+        );
+        this.updated = Date.now();
+        return true;
     }
 
     public delete(frame: number | null, force: boolean): boolean {
