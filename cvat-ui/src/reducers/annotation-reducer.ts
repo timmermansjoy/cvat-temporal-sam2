@@ -134,6 +134,7 @@ const defaultState: AnnotationState = {
         activeShapeType: ShapeType.RECTANGLE,
         activeLabelID: null,
         activeObjectType: ObjectType.SHAPE,
+        refinementTargetID: null,
         activeInteractorParameters: {},
     },
     editing: {
@@ -1062,12 +1063,28 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                     activeInteractor,
                     activeInteractorParameters: _.cloneDeep(activeInteractorParameters),
                     activeLabelID,
+                    refinementTargetID: null,
                 },
                 canvas: {
                     ...state.canvas,
                     activeControl: activeInteractor.kind.startsWith('opencv') ?
                         ActiveControl.OPENCV_TOOLS :
                         ActiveControl.AI_TOOLS,
+                },
+            };
+        }
+        case AnnotationActionTypes.REQUEST_MASK_REFINEMENT: {
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    contextMenu: {
+                        ...defaultState.canvas.contextMenu,
+                    },
+                },
+                drawing: {
+                    ...state.drawing,
+                    refinementTargetID: action.payload.clientID,
                 },
             };
         }

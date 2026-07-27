@@ -8,7 +8,7 @@ import Button from 'antd/lib/button';
 import { MenuProps } from 'antd/lib/menu';
 import Icon, {
     LinkOutlined, CopyOutlined, BlockOutlined, RetweetOutlined, DeleteOutlined, EditOutlined,
-    FunctionOutlined, VerticalAlignBottomOutlined,
+    FunctionOutlined, VerticalAlignBottomOutlined, HighlightOutlined,
 } from '@ant-design/icons';
 
 import {
@@ -23,6 +23,7 @@ import {
 
 interface Props {
     locked: boolean;
+    canRefineMask: boolean;
     serverID: number | null;
     shapeType: ShapeType;
     objectType: ObjectType;
@@ -55,6 +56,7 @@ interface Props {
     setLayerPopoverVisible(visible: boolean): void;
     setColorPickerVisible(visible: boolean): void;
     edit(): void;
+    refine(): void;
     slice(): void;
     simplify(): void;
     runAnnotationAction(): void;
@@ -110,6 +112,23 @@ function EditMaskItem(props: ItemProps): JSX.Element {
                 className='cvat-object-item-menu-edit-object'
             >
                 Edit
+            </Button>
+        </CVATTooltip>
+    );
+}
+
+function RefineMaskItem(props: ItemProps): JSX.Element {
+    const { toolProps } = props;
+    const { refine } = toolProps;
+    return (
+        <CVATTooltip title='Improve this mask with an AI interactor'>
+            <Button
+                type='link'
+                icon={<HighlightOutlined />}
+                onClick={refine}
+                className='cvat-object-item-menu-refine-mask'
+            >
+                Refine
             </Button>
         </CVATTooltip>
     );
@@ -350,6 +369,7 @@ export default function ItemMenu(props: Props): MenuProps {
         SWITCH_COLOR = 'switch_color',
         REMOVE_ITEM = 'remove_item',
         EDIT_MASK = 'edit_mask',
+        REFINE_MASK = 'refine_mask',
         SLICE_ITEM = 'slice_item',
         SIMPLIFY_ITEM = 'simplify_item',
         RUN_ANNOTATION_ACTION = 'run_annotation_action',
@@ -370,6 +390,13 @@ export default function ItemMenu(props: Props): MenuProps {
     }
 
     if (!locked && shapeType === ShapeType.MASK) {
+        if (props.canRefineMask) {
+            items.push({
+                key: MenuKeys.REFINE_MASK,
+                label: <RefineMaskItem toolProps={props} />,
+            });
+        }
+
         items.push({
             key: MenuKeys.EDIT_MASK,
             label: <EditMaskItem toolProps={props} />,

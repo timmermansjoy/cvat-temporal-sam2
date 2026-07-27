@@ -405,6 +405,9 @@ type Props = StateToProps & DispatchToProps;
 class CanvasWrapperComponent extends React.PureComponent<Props> {
     private debouncedUpdate = debounce(this.updateCanvas.bind(this), 250, { leading: true });
     private canvasTipsRef = React.createRef<CanvasTipsComponent>();
+    private hoveredStateID: number | null = null;
+    private activationBeforeHover: [number | null, number | null] = [null, null];
+    private cursorMoveSequence = 0;
 
     public componentDidMount(): void {
         const {
@@ -810,6 +813,10 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
         const { workspace, activatedStateID, onActivateObject } = this.props;
 
         if ((e.target as HTMLElement).tagName === 'svg' && e.button !== 2) {
+            this.cursorMoveSequence++;
+            this.hoveredStateID = null;
+            this.activationBeforeHover = [null, null];
+
             // Native double-click selection can escape from the SVG canvas to nearby UI text.
             // Prevent only repeated SVG clicks, keeping regular canvas clicks and drags unchanged.
             if (e.detail > 1) {
@@ -860,6 +867,9 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
 
     private onCanvasShapeClicked = (e: any): void => {
         const { onExpandObject } = this.props;
+        this.cursorMoveSequence++;
+        this.hoveredStateID = null;
+        this.activationBeforeHover = [null, null];
         scrollAndExpandState(e.detail.state, onExpandObject);
     };
 
@@ -879,12 +889,17 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
         const {
             jobInstance, activatedStateID, activatedElementID, workspace, onActivateObject,
         } = this.props;
+        const cursorMoveSequence = ++this.cursorMoveSequence;
 
         if (![Workspace.STANDARD, Workspace.REVIEW, Workspace.SINGLE_SHAPE].includes(workspace)) {
             return;
         }
 
         const result = await jobInstance.annotations.select(event.detail.states, event.detail.x, event.detail.y);
+        if (cursorMoveSequence !== this.cursorMoveSequence) {
+            return;
+        }
+
         if (result && result.state) {
             if ([ShapeType.POLYLINE, ShapeType.POINTS].includes(result.state.shapeType)) {
                 if (result.distance > MAX_DISTANCE_TO_OPEN_SHAPE) {
@@ -894,7 +909,19 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
 
             const newActivatedElement = event.detail.activatedElementID || null;
             if (activatedStateID !== result.state.clientID || activatedElementID !== newActivatedElement) {
+                if (this.hoveredStateID === null) {
+                    this.activationBeforeHover = [activatedStateID, activatedElementID];
+                }
+                this.hoveredStateID = result.state.clientID;
                 onActivateObject(result.state.clientID, event.detail.activatedElementID || null);
+            }
+        } else if (this.hoveredStateID !== null) {
+            const shouldRestorePreviousActivation = activatedStateID === this.hoveredStateID;
+            const [previousStateID, previousElementID] = this.activationBeforeHover;
+            this.hoveredStateID = null;
+            this.activationBeforeHover = [null, null];
+            if (shouldRestorePreviousActivation) {
+                onActivateObject(previousStateID, previousElementID);
             }
         }
     };

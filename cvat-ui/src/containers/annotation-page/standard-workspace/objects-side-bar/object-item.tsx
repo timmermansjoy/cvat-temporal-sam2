@@ -18,6 +18,7 @@ import {
     switchSimplifyVisibility as switchSimplifyVisibilityAction,
     removeObject as removeObjectAction,
     collapseObjectItems,
+    requestMaskRefinement as requestMaskRefinementAction,
 } from 'actions/annotation-actions';
 import {
     ActiveControl, CombinedState, ColorBy,
@@ -62,6 +63,7 @@ interface StateToProps {
     canvasInstance: Canvas | Canvas3d;
     focusedObjectPadding: number;
     defaultApproxPolyAccuracy: number;
+    canRefineMask: boolean;
     simplifyState: {
         objectState: ObjectState | null;
         originalPoints: number[] | null;
@@ -79,6 +81,7 @@ interface DispatchToProps {
     changeGroupColor(group: number, color: string): void;
     updateActiveControl(activeControl: ActiveControl): void;
     expandObject(objectState: ObjectState): void;
+    requestMaskRefinement(clientID: number): void;
 }
 
 function mapStateToProps(state: CombinedState, own: OwnProps): StateToProps {
@@ -123,6 +126,7 @@ function mapStateToProps(state: CombinedState, own: OwnProps): StateToProps {
         canvasInstance: canvasInstance as Canvas | Canvas3d,
         focusedObjectPadding,
         defaultApproxPolyAccuracy,
+        canRefineMask: state.models.interactors.length > 0,
         simplifyState,
     };
 }
@@ -159,6 +163,9 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
         },
         expandObject(objectState: ObjectState): void {
             dispatch(collapseObjectItems([objectState], false));
+        },
+        requestMaskRefinement(clientID: number): void {
+            dispatch(requestMaskRefinementAction(clientID));
         },
     };
 }
@@ -264,6 +271,11 @@ class ObjectItemContainer extends React.PureComponent<Props, State> {
             updateActiveControl(ActiveControl.EDIT);
             canvasInstance.edit({ enabled: true, state: objectState });
         }
+    };
+
+    private refine = (): void => {
+        const { objectState, requestMaskRefinement } = this.props;
+        requestMaskRefinement(objectState.clientID as number);
     };
 
     private slice = async (): Promise<void> => {
@@ -573,6 +585,7 @@ class ObjectItemContainer extends React.PureComponent<Props, State> {
             objectState,
             attributes,
             activated,
+            canRefineMask,
             colorBy,
             normalizedKeyMap,
             keyMap,
@@ -620,6 +633,8 @@ class ObjectItemContainer extends React.PureComponent<Props, State> {
                     changeColor={this.changeColor}
                     changeLabel={this.changeLabel}
                     edit={this.edit}
+                    refine={this.refine}
+                    canRefineMask={canRefineMask}
                     slice={this.slice}
                     simplify={this.requestSimplification}
                     resetCuboidPerspective={this.resetCuboidPerspective}

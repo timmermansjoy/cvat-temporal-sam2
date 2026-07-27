@@ -153,6 +153,7 @@ export enum AnnotationActionTypes {
     SAVE_LOGS_SUCCESS = 'SAVE_LOGS_SUCCESS',
     SAVE_LOGS_FAILED = 'SAVE_LOGS_FAILED',
     INTERACT_WITH_CANVAS = 'INTERACT_WITH_CANVAS',
+    REQUEST_MASK_REFINEMENT = 'REQUEST_MASK_REFINEMENT',
     GET_DATA_FAILED = 'GET_DATA_FAILED',
     CANVAS_ERROR_OCCURRED = 'CANVAS_ERROR_OCCURRED',
     SET_FORCE_EXIT_ANNOTATION_PAGE_FLAG = 'SET_FORCE_EXIT_ANNOTATION_PAGE_FLAG',
@@ -1599,6 +1600,15 @@ export function interactWithCanvas(
             activeInteractor,
             activeLabelID,
             activeInteractorParameters,
+        },
+    };
+}
+
+export function requestMaskRefinement(clientID: number | null): AnyAction {
+    return {
+        type: AnnotationActionTypes.REQUEST_MASK_REFINEMENT,
+        payload: {
+            clientID,
         },
     };
 }

@@ -24,6 +24,7 @@ interface Props {
     labelID: number;
     isGroundTruth: boolean;
     locked: boolean;
+    canRefineMask: boolean;
     elements: number[];
     color: string;
     colorBy: ColorBy;
@@ -50,6 +51,7 @@ interface Props {
     resetCuboidPerspective(): void;
     runAnnotationAction(): void;
     edit(): void;
+    refine(): void;
     slice(): void;
     simplify(): void;
 }
@@ -72,6 +74,7 @@ function ObjectItemComponent(props: Props): JSX.Element {
         zOrder,
         normalizedKeyMap,
         isGroundTruth,
+        canRefineMask,
         activate,
         focusAndExpand,
         copy,
@@ -89,6 +92,7 @@ function ObjectItemComponent(props: Props): JSX.Element {
         resetCuboidPerspective,
         runAnnotationAction,
         edit,
+        refine,
         slice,
         simplify,
         jobInstance,
@@ -158,6 +162,8 @@ function ObjectItemComponent(props: Props): JSX.Element {
                     toSpecificLayer={toSpecificLayer}
                     resetCuboidPerspective={resetCuboidPerspective}
                     edit={edit}
+                    refine={refine}
+                    canRefineMask={canRefineMask}
                     slice={slice}
                     simplify={simplify}
                     runAnnotationAction={runAnnotationAction}

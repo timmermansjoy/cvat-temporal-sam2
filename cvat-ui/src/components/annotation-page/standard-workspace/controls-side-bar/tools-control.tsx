@@ -40,6 +40,8 @@ import {
     fetchAnnotationsAsync,
     updateAnnotationsAsync,
     createAnnotationsAsync,
+    requestMaskRefinement,
+    activateObject,
 } from 'actions/annotation-actions';
 import DetectorRunner, {
     AnnotateTaskRequestBody,
@@ -60,7 +62,7 @@ interface StateToProps {
     canvasInstance: Canvas;
     labels: Label[];
     states: ObjectState[];
-    activatedStateID: number | null;
+    refinementTargetID: number | null;
     activeLabelID: number | null;
     jobInstance: Job;
     isActivated: boolean;
@@ -82,6 +84,8 @@ interface DispatchToProps {
     onInteractionStart: typeof interactWithCanvas;
     onSwitchToolsBlockerState: typeof switchToolsBlockerState;
     switchNavigationBlocked: typeof switchNavigationBlockedAction;
+    onRequestMaskRefinement: typeof requestMaskRefinement;
+    onActivateObject: typeof activateObject;
 }
 
 const MIN_SUPPORTED_INTERACTOR_VERSION = 2;
@@ -100,9 +104,8 @@ function mapStateToProps(state: CombinedState): StateToProps {
             annotations: {
                 zLayer: { cur: curZOrder },
                 states,
-                activatedStateID,
             },
-            drawing: { activeLabelID },
+            drawing: { activeLabelID, refinementTargetID },
         },
         models: {
             interactors, detectors, trackers,
@@ -129,7 +132,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         activeLabelID,
         labels,
         states,
-        activatedStateID,
+        refinementTargetID,
         canvasInstance: canvasInstance as Canvas,
         jobInstance: jobInstance as Job,
         frame,
@@ -148,6 +151,8 @@ const mapDispatchToProps = {
     fetchAnnotations: fetchAnnotationsAsync,
     onSwitchToolsBlockerState: switchToolsBlockerState,
     switchNavigationBlocked: switchNavigationBlockedAction,
+    onRequestMaskRefinement: requestMaskRefinement,
+    onActivateObject: activateObject,
 };
 
 type Props = StateToProps & DispatchToProps;
@@ -320,6 +325,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     public componentDidUpdate(prevProps: Props, prevState: State): void {
         const {
             isActivated, defaultApproxPolyAccuracy, states, toolsBlockerState, jobInstance,
+            refinementTargetID,
         } = this.props;
         const {
             approxPolyAccuracy, mode, activeTracker, thresholdValue,
@@ -328,6 +334,16 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         if (prevProps.states !== states || prevState.activeTracker !== activeTracker) {
             this.setState({
                 portals: this.collectTrackerPortals(),
+            });
+        }
+
+        if (prevProps.refinementTargetID !== refinementTargetID && refinementTargetID !== null) {
+            const refinementTarget = states.find((state) => state.clientID === refinementTargetID);
+            this.setState({
+                activeTab: 'interactors',
+                activeLabelID: refinementTarget?.label.id as number ?? null,
+                convertMasksToPolygons: false,
+                toolsPopoverVisible: true,
             });
         }
 
@@ -341,6 +357,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         if (prevProps.isActivated && !isActivated) {
             window.removeEventListener('contextmenu', this.contextmenuDisabler);
+            this.interaction.refinementTargetID = null;
 
             // hide interaction messages if exists
             for (const messageCallback of ['closeFetchingMessage', 'noShapesMessage'] as const) {
@@ -1325,7 +1342,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderInteractorBlock(): JSX.Element {
         const {
-            interactors, canvasInstance, labels, states, activatedStateID, onInteractionStart, interactorExtras,
+            interactors, canvasInstance, labels, states, refinementTargetID, onInteractionStart, interactorExtras,
         } = this.props;
         const {
             activeInteractor, activeLabelID, fetching, allowROI,
@@ -1347,10 +1364,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const minNegVertices = activeInteractor?.params?.canvas?.minNegVertices ?? -1;
         const renderStartWithBox = activeInteractor?.params?.canvas?.startWithBoxOptional ?? false;
         const refinementTarget = states.find((state) => (
-            state.clientID === activatedStateID &&
+            state.clientID === refinementTargetID &&
             state.shapeType === ShapeType.MASK &&
             !state.lock
         ));
+        const isRefining = refinementTargetID !== null;
 
         const renderedInteractorExtras = interactorExtras
             .sort((a, b) => a.data.weight - b.data.weight)
@@ -1361,6 +1379,15 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         return (
             <>
+                {isRefining && (
+                    <Row justify='start'>
+                        <Col>
+                            <Text className='cvat-text-color' strong>
+                                {`Refining mask #${refinementTargetID}`}
+                            </Text>
+                        </Col>
+                    </Row>
+                )}
                 <Row justify='start'>
                     <Col>
                         <Text className='cvat-text-color'>Interactor</Text>
@@ -1403,16 +1430,17 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 </Row>
                 <div className='cvat-tools-interactor-setups'>
                     {allowROI && this.renderROIControls()}
-                    <div>
-                        <Switch
-                            checked={!refinementTarget && convertMasksToPolygons}
-                            disabled={!!refinementTarget}
-                            onChange={(checked: boolean) => {
-                                this.setState({ convertMasksToPolygons: checked });
-                            }}
-                        />
-                        <Text>Convert masks to polygons</Text>
-                    </div>
+                    {!isRefining && (
+                        <div>
+                            <Switch
+                                checked={convertMasksToPolygons}
+                                onChange={(checked: boolean) => {
+                                    this.setState({ convertMasksToPolygons: checked });
+                                }}
+                            />
+                            <Text>Convert masks to polygons</Text>
+                        </div>
+                    )}
 
                     {renderStartWithBox && (
                         <div>
@@ -1438,11 +1466,20 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                             className='cvat-tools-interact-button'
                             disabled={!activeInteractor ||
                                 fetching ||
+                                (isRefining && !refinementTarget) ||
                                 activeInteractor.version < MIN_SUPPORTED_INTERACTOR_VERSION}
                             onClick={() => {
-                                if (activeInteractor && activeLabelID && labels.length) {
-                                    this.interaction.refinementTargetID = refinementTarget?.clientID ?? null;
+                                if (
+                                    activeInteractor &&
+                                    activeLabelID &&
+                                    labels.length &&
+                                    (!isRefining || refinementTarget)
+                                ) {
+                                    this.interaction.refinementTargetID = isRefining ?
+                                        refinementTarget!.clientID as number :
+                                        null;
                                     this.setState({ mode: 'interaction' });
+                                    this.setState({ toolsPopoverVisible: false });
                                     canvasInstance.cancel();
                                     const startWithBox = activeInteractor.params.canvas.startWithBoxOptional ? (
                                         startInteractingWithBox
@@ -1465,7 +1502,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                 }
                             }}
                         >
-                            {refinementTarget ? 'Refine selected mask' : 'Interact'}
+                            {isRefining ? `Start refining mask #${refinementTargetID}` : 'Create mask'}
                         </Button>
                     </Col>
                 </Row>
@@ -1583,6 +1620,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     }
 
     private renderPopoverContent(): JSX.Element {
+        const { refinementTargetID } = this.props;
         return (
             <div className='cvat-tools-control-popover-content'>
                 <Row justify='start'>
@@ -1602,7 +1640,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         label: 'Interactors',
                         children: (
                             <>
-                                {this.renderLabelBlock()}
+                                {refinementTargetID === null && this.renderLabelBlock()}
                                 {this.renderInteractorBlock()}
                             </>
                         ),
@@ -1628,11 +1666,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     public render(): JSX.Element | null {
         const {
             interactors, detectors, trackers, isActivated,
-            canvasInstance, labels, frameData,
+            canvasInstance, labels, frameData, refinementTargetID, onRequestMaskRefinement, onActivateObject,
         } = this.props;
         const {
             fetching, approxPolyAccuracy, interactorResponseReceived, thresholdValue,
-            showConfidenceControl, mode, portals, convertMasksToPolygons,
+            showConfidenceControl, mode, portals, convertMasksToPolygons, toolsPopoverVisible,
         } = this.state;
 
         if (![...interactors, ...detectors, ...trackers].length) return null;
@@ -1662,6 +1700,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         const interactionContent: JSX.Element | null = showInteractionContent ? (
             <>
+                { this.interaction.refinementTargetID !== null && (
+                    <Text strong>{`Refining mask #${this.interaction.refinementTargetID}`}</Text>
+                )}
                 { convertMasksToPolygons && (
                     <ApproximationAccuracy
                         approxPolyAccuracy={approxPolyAccuracy}
@@ -1700,9 +1741,18 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 {this.renderRegionOfInterestOverlay()}
                 <CustomPopover
                     {...dynamicPopoverProps}
+                    open={toolsPopoverVisible}
                     placement='right'
                     content={this.renderPopoverContent()}
-                    onVisibleChange={(visible: boolean) => this.setState({ toolsPopoverVisible: visible })}
+                    onOpenChange={(visible: boolean) => {
+                        this.setState({ toolsPopoverVisible: visible });
+                        if (visible && refinementTargetID === null) {
+                            onActivateObject(null, null, null);
+                        }
+                        if (!visible && refinementTargetID !== null && !isActivated) {
+                            onRequestMaskRefinement(null);
+                        }
+                    }}
                 >
                     <Icon {...dynamicIconProps} component={AIToolsIcon} />
                 </CustomPopover>

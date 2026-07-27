@@ -114,6 +114,22 @@ context('Manipulations with masks', { scrollBehavior: false }, () => {
             }
         });
 
+        it('Only keeps a hovered mask selected after it is clicked', () => {
+            cy.startMaskDrawing();
+            cy.drawMask(drawingActions);
+            cy.finishMaskDrawing();
+
+            cy.get('#cvat_canvas_shape_1').trigger('mousemove');
+            cy.get('#cvat_canvas_shape_1').should('have.class', 'cvat_canvas_shape_activated');
+            cy.get('.cvat-canvas-container').trigger('mousemove', { clientX: 100, clientY: 100 });
+            cy.get('#cvat_canvas_shape_1').should('not.have.class', 'cvat_canvas_shape_activated');
+
+            cy.get('#cvat_canvas_shape_1').trigger('mousemove');
+            cy.get('#cvat_canvas_shape_1').click();
+            cy.get('.cvat-canvas-container').trigger('mousemove', { clientX: 100, clientY: 100 });
+            cy.get('#cvat_canvas_shape_1').should('have.class', 'cvat_canvas_shape_activated');
+        });
+
         it('Copy mask to another frame', () => {
             cy.startMaskDrawing();
             cy.drawMask(drawingActions);

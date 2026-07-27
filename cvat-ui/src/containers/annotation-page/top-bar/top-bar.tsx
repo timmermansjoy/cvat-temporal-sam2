@@ -616,6 +616,11 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
         const directionLabel = direction === 1 ? 'forward' : 'backward';
         const progressKey = `sam2-tracking-${jobInstance.id}-${directionLabel}`;
         const showProgress = (message: string, percent: number): void => {
+            if (percent >= 100) {
+                notification.destroy(progressKey);
+                return;
+            }
+
             notification.info({
                 key: progressKey,
                 message: `SAM2 tracking ${directionLabel}`,

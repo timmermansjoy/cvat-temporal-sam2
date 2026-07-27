@@ -912,6 +912,7 @@ export interface AnnotationState {
     };
     drawing: {
         activeInteractor?: MLModel | OpenCVTool;
+        refinementTargetID: number | null;
         activeInteractorParameters: Partial<{
             command: Parameters<Canvas['interact']>[0]['command'];
             settings: Parameters<Canvas['interact']>[0]['settings'];

@@ -107,6 +107,7 @@ interface Props {
     shapeType: ShapeType;
     objectType: ObjectType;
     isGroundTruth: boolean;
+    canRefineMask: boolean;
     color: string;
     colorBy: ColorBy;
     type: string;
@@ -138,6 +139,7 @@ interface Props {
     resetCuboidPerspective(): void;
     runAnnotationAction(): void;
     edit(): void;
+    refine(): void;
     slice(): void;
     simplify(): void;
 }
@@ -167,6 +169,7 @@ function ItemTopComponent(props: Props): JSX.Element {
         sliceShortcut,
         runAnnotationsActionShortcut,
         isGroundTruth,
+        canRefineMask,
         changeColor,
         changeLabel,
         copy,
@@ -182,6 +185,7 @@ function ItemTopComponent(props: Props): JSX.Element {
         resetCuboidPerspective,
         runAnnotationAction,
         edit,
+        refine,
         slice,
         simplify,
         jobInstance,
@@ -269,6 +273,8 @@ function ItemTopComponent(props: Props): JSX.Element {
                         resetCuboidPerspective,
                         setColorPickerVisible,
                         edit,
+                        refine,
+                        canRefineMask,
                         slice,
                         simplify,
                         runAnnotationAction,
