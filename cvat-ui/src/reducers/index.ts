@@ -1016,6 +1016,7 @@ export interface PlayerSettingsState {
     canvasBackgroundColor: string;
     frameStep: number;
     sam2FrameCount: number;
+    samTrackerModelID: string;
     frameSpeed: FrameSpeed;
     resetZoom: boolean;
     rotateAll: boolean;

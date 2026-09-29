@@ -14,6 +14,8 @@ const core = getCore();
 
 export const SAM2_TRACKER_MODEL_ID = 'pth-facebookresearch-sam2';
 export const SAM2_TRACKER_ACTION_NAME = 'Segment Anything 2: Tracker';
+export const SAM31_TRACKER_MODEL_ID = 'pth-facebookresearch-sam3-1';
+export const SAM31_TRACKER_ACTION_NAME = 'Segment Anything 3.1: Tracker';
 const SAM2_TRACKER_BATCH_SIZE = 10;
 
 type Collection = Parameters<BaseCollectionAction['run']>[0]['collection'];
@@ -77,6 +79,14 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
     // ponytail: one active object set per job/direction; key by committed object IDs when the action API exposes them.
     readonly #sessions = new Map<string, TrackingSession>();
     readonly #predictionWindows: PredictionWindow[] = [];
+
+    public get modelID(): string {
+        return String(this.#model.id);
+    }
+
+    public get modelName(): string {
+        return this.modelID === SAM31_TRACKER_MODEL_ID ? 'SAM3.1' : 'SAM2';
+    }
 
     #logInference(
         operation: 'initialize' | 'track' | 'correct',
@@ -285,7 +295,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
 
         const taskID = this.#instance instanceof Job ? this.#instance.taskId : this.#instance.id;
         if (taskID === null) {
-            throw new Error('SAM2 tracker requires a task ID');
+            throw new Error(`${this.modelName} tracker requires a task ID`);
         }
         const job = this.#instance instanceof Job ? { job: this.#instance.id } : {};
         const jobKey = `${taskID}:${'job' in job ? job.job : 'task'}`;
@@ -309,7 +319,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             contextFrames = session.contextFrames;
             anchorFrame = session.anchorFrame;
         } else {
-            onProgress('Initializing SAM2 tracker', 0);
+            onProgress(`Initializing ${this.modelName} tracker`, 0);
             if (cancelled()) {
                 return noChanges;
             }
@@ -325,7 +335,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             );
 
             if (!Array.isArray(initialized.states) || initialized.states.length !== initialShapes.length) {
-                throw new Error('SAM2 tracker returned an invalid initialization response');
+                throw new Error(`${this.modelName} tracker returned an invalid initialization response`);
             }
             states = initialized.states;
         }
@@ -389,6 +399,9 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 this.#sessions.delete(sessionKey);
                 throw error;
             }
+            if (cancelled()) {
+                return noChanges;
+            }
             const frameResults = result.frame_results ??
                 (batchFrames.length === 1 && Array.isArray(result.shapes) ? [result.shapes] : []);
             if (
@@ -399,7 +412,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                     !Array.isArray(shapes) || shapes.length !== initialShapes.length
                 ))
             ) {
-                throw new Error('SAM2 tracker returned an invalid tracking response');
+                throw new Error(`${this.modelName} tracker returned an invalid tracking response`);
             }
             states = result.states;
 
@@ -437,6 +450,9 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                 );
                 contextFrames++;
 
+                if (cancelled()) {
+                    return noChanges;
+                }
                 const correctedKeyframes = correctedKeyframesFor(frame);
                 if (correctedKeyframes.length) {
                     let reinitialized: SAM2TrackerResults;
@@ -459,7 +475,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
                         !Array.isArray(reinitialized.states) ||
                         reinitialized.states.length !== correctedKeyframes.length
                     ) {
-                        throw new Error('SAM2 tracker returned an invalid correction response');
+                        throw new Error(`${this.modelName} tracker returned an invalid correction response`);
                     }
 
                     for (
@@ -570,7 +586,10 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
             }
         }
 
-        onProgress('Tracking with SAM2', 100);
+        onProgress(`Tracking with ${this.modelName}`, 100);
+        if (cancelled()) {
+            return noChanges;
+        }
         if (endpointShapes) {
             this.#sessions.set(sessionKey, {
                 frame: endpointFrame,
@@ -623,7 +642,7 @@ export default class SAM2TrackerAction extends BaseCollectionAction {
     }
 
     public get name(): string {
-        return SAM2_TRACKER_ACTION_NAME;
+        return this.modelID === SAM31_TRACKER_MODEL_ID ? SAM31_TRACKER_ACTION_NAME : SAM2_TRACKER_ACTION_NAME;
     }
 
     public get parameters(): BaseCollectionAction['parameters'] {

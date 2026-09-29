@@ -110,9 +110,13 @@ export async function run(
             cancelled,
         });
 
-        await instance.annotations.commit(created, deleted, frame);
+        wrappedOnProgress.flush();
+        if (!cancelled()) {
+            await instance.annotations.commit(created, deleted, frame);
+        }
         event.close();
     } finally {
+        wrappedOnProgress.cancel();
         await action.destroy();
     }
 }
@@ -167,13 +171,17 @@ export async function call(
             },
         });
 
-        await instance.annotations.commit(
-            processedCollection.created,
-            processedCollection.deleted,
-            frame,
-        );
+        throttledOnProgress.flush();
+        if (!cancelled()) {
+            await instance.annotations.commit(
+                processedCollection.created,
+                processedCollection.deleted,
+                frame,
+            );
+        }
         event.close();
     } finally {
+        throttledOnProgress.cancel();
         await action.destroy();
     }
 }

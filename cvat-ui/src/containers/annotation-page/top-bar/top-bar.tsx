@@ -37,20 +37,21 @@ import AnnotationTopBarComponent from 'components/annotation-page/top-bar/top-ba
 import { Canvas } from 'cvat-canvas-wrapper';
 import { Canvas3d } from 'cvat-canvas3d-wrapper';
 import {
-    BaseCollectionAction, FramesMetaData, getCore, Job, JobType, ObjectState, ShapeType, Source, Task,
+    BaseCollectionAction, FramesMetaData, getCore, Job, ObjectState, ShapeType,
 } from 'cvat-core-wrapper';
 import {
     ActiveControl, CombinedState, FrameSpeed, NavigationType, ToolsBlockerState, Workspace,
 } from 'reducers';
 import isAbleToChangeFrame from 'utils/is-able-to-change-frame';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
-import { switchToolsBlockerState } from 'actions/settings-actions';
+import { changeSAM2FrameCount, changeSAMTrackerModel, switchToolsBlockerState } from 'actions/settings-actions';
 import { writeLatestFrame } from 'utils/remember-latest-frame';
 import { finishDraw } from 'utils/drawing';
 import { toClipboard } from 'utils/to-clipboard';
 import { Chapter } from 'cvat-core/src/frames';
 import {
     SAM2_TRACKER_ACTION_NAME, SAM2_TRACKER_MODEL_ID,
+    SAM31_TRACKER_ACTION_NAME, SAM31_TRACKER_MODEL_ID,
 } from 'utils/annotations-actions/sam2-tracker';
 import { ShortcutScope } from 'utils/enums';
 import { subKeyMap } from 'utils/component-subkeymap';
@@ -58,15 +59,27 @@ import { subKeyMap } from 'utils/component-subkeymap';
 const core = getCore();
 const componentShortcuts = {
     SAM2_TRACK_BACKWARD: {
-        name: 'SAM2: propagate frames backward',
+        name: 'SAM: propagate frames backward',
         description: 'Track the selected polygon or mask backward',
         sequences: ['s'],
         scope: ShortcutScope.STANDARD_WORKSPACE,
     },
     SAM2_TRACK_FORWARD: {
-        name: 'SAM2: propagate frames forward',
+        name: 'SAM: propagate frames forward',
         description: 'Track the selected polygon or mask forward',
         sequences: ['g'],
+        scope: ShortcutScope.STANDARD_WORKSPACE,
+    },
+    SAM2_TRACK_ALL_BACKWARD: {
+        name: 'SAM: propagate all objects backward',
+        description: 'Track all visible, unlocked polygons and masks on the current frame backward',
+        sequences: ['shift+s'],
+        scope: ShortcutScope.STANDARD_WORKSPACE,
+    },
+    SAM2_TRACK_ALL_FORWARD: {
+        name: 'SAM: propagate all objects forward',
+        description: 'Track all visible, unlocked polygons and masks on the current frame forward',
+        sequences: ['shift+g'],
         scope: ShortcutScope.STANDARD_WORKSPACE,
     },
 };
@@ -82,6 +95,8 @@ interface StateToProps {
     frameFilename: string;
     frameStep: number;
     sam2FrameCount: number;
+    samTrackerModelID: string;
+    samTrackerModels: { value: string; label: string; disabled: boolean }[];
     frameSpeed: FrameSpeed;
     frameDelay: number;
     frameFetching: boolean;
@@ -110,6 +125,8 @@ interface StateToProps {
 }
 
 interface DispatchToProps {
+    onChangeSAM2FrameCount(frameCount: number): void;
+    onChangeSAMTrackerModel(modelID: string): void;
     onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): Promise<void>;
     activateSAM2Prediction(clientID: number): void;
     onSwitchPlay(playing: boolean): void;
@@ -171,7 +188,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         },
         settings: {
             player: {
-                frameSpeed, frameStep, sam2FrameCount, showDeletedFrames,
+                frameSpeed, frameStep, sam2FrameCount, samTrackerModelID, showDeletedFrames,
             },
             workspace: {
                 autoSave,
@@ -197,6 +214,14 @@ function mapStateToProps(state: CombinedState): StateToProps {
         frameIsDeleted,
         frameStep,
         sam2FrameCount,
+        samTrackerModelID: samTrackerModelID || SAM2_TRACKER_MODEL_ID,
+        samTrackerModels: [
+            { value: SAM2_TRACKER_MODEL_ID, label: 'SAM2 Tiny' },
+            { value: SAM31_TRACKER_MODEL_ID, label: 'SAM3.1' },
+        ].map((option) => ({
+            ...option,
+            disabled: !state.models.trackers.some((model) => model.id === option.value),
+        })),
         frameSpeed,
         frameDelay,
         frameFetching,
@@ -231,6 +256,12 @@ function mapStateToProps(state: CombinedState): StateToProps {
 
 function mapDispatchToProps(dispatch: any): DispatchToProps {
     return {
+        onChangeSAM2FrameCount(frameCount: number): void {
+            dispatch(changeSAM2FrameCount(frameCount));
+        },
+        onChangeSAMTrackerModel(modelID: string): void {
+            dispatch(changeSAMTrackerModel(modelID));
+        },
         onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): Promise<void> {
             return dispatch(changeFrameAsync(frame, fillBuffer, frameStep));
         },
@@ -310,13 +341,6 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
 }
 
 type Props = StateToProps & DispatchToProps & RouteComponentProps;
-type SAM2NavigationState = {
-    sam2Prediction?: {
-        groupID: number | null;
-        labelID: number;
-    };
-};
-
 class AnnotationTopBarContainer extends React.PureComponent<Props> {
     private inputFrameRef: React.RefObject<HTMLInputElement>;
     private autoSaveInterval: number | undefined;
@@ -358,7 +382,6 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
         });
 
         window.addEventListener('beforeunload', this.beforeUnloadCallback);
-        this.activatePendingSAM2Prediction();
     }
 
     public componentDidUpdate(prevProps: Props): void {
@@ -368,7 +391,6 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             if (this.autoSaveInterval) window.clearInterval(this.autoSaveInterval);
             this.autoSaveInterval = window.setInterval(this.autoSave.bind(this), autoSaveInterval);
         }
-        this.activatePendingSAM2Prediction();
         this.handlePlayIfNecessary();
     }
 
@@ -559,144 +581,107 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
 
     private trackingSAM2 = false;
 
-    private activatePendingSAM2Prediction = (): void => {
-        const {
-            activateSAM2Prediction, frameNumber, history, location, objectStates,
-        } = this.props;
-        const pending = (location.state as SAM2NavigationState | undefined)?.sam2Prediction;
-        if (!pending) {
-            return;
-        }
-
-        const prediction = objectStates
-            .filter((state) => (
-                state.frame === frameNumber &&
-                !state.outside &&
-                state.label.id === pending.labelID &&
-                [ShapeType.POLYGON, ShapeType.MASK].includes(state.shapeType) &&
-                (
-                    pending.groupID ?
-                        state.group?.id === pending.groupID :
-                        state.source === Source.AUTO
-                )
-            ))
-            .sort((left, right) => right.updated - left.updated)[0];
-        if (typeof prediction?.clientID === 'number') {
-            activateSAM2Prediction(prediction.clientID);
-            history.replace(`${location.pathname}${location.search}${location.hash}`);
-        }
-    };
-
-    private onTrackSAM2 = async (direction: -1 | 1): Promise<void> => {
+    private onTrackSAM2 = async (direction: -1 | 1, allObjects = false): Promise<void> => {
         const {
             activateSAM2Prediction, activatedStateID, frameNumber, jobInstance, objectStates,
-            history, playing, onSwitchPlay, sam2FrameCount,
+            playing, onSwitchPlay, sam2FrameCount, frameFetching, frameIsDeleted,
+            samTrackerModelID = SAM2_TRACKER_MODEL_ID,
         } = this.props;
-        if (this.trackingSAM2) {
+        if (this.trackingSAM2 || frameFetching || frameIsDeleted || !isAbleToChangeFrame()) {
             return;
         }
 
-        const objectState = objectStates.find((state) => state.clientID === activatedStateID) ?? objectStates
+        const eligibleStates = objectStates
             .filter((state) => (
-                state.frame === frameNumber && [ShapeType.POLYGON, ShapeType.MASK].includes(state.shapeType)
+                state.frame === frameNumber && !state.outside && !state.lock && !state.hidden &&
+                [ShapeType.POLYGON, ShapeType.MASK].includes(state.shapeType)
             ))
-            .sort((left, right) => right.updated - left.updated)[0];
-        if (
-            !objectState ||
-            objectState.outside ||
-            ![ShapeType.POLYGON, ShapeType.MASK].includes(objectState.shapeType)
-        ) {
-            notification.warning({ message: 'Draw or select a polygon or mask before tracking' });
+            .sort((left, right) => right.updated - left.updated);
+        const selectedState = objectStates.find((state) => state.clientID === activatedStateID) ?? eligibleStates[0];
+        const trackingStates = allObjects ? eligibleStates : eligibleStates.filter((state) => state === selectedState);
+        if (!trackingStates.length) {
+            notification.warning({ message: 'Draw or select a visible, unlocked polygon or mask before tracking' });
             return;
         }
+        const primaryObjectIndex = Math.max(trackingStates.indexOf(selectedState), 0);
+        const objectState = trackingStates[primaryObjectIndex];
+        const objectCount = trackingStates.length;
+        const objectDescription = `${objectCount} object${objectCount === 1 ? '' : 's'}`;
+        const modelName = samTrackerModelID === SAM31_TRACKER_MODEL_ID ? 'SAM3.1' : 'SAM2';
+        const actionName = samTrackerModelID === SAM31_TRACKER_MODEL_ID ?
+            SAM31_TRACKER_ACTION_NAME : SAM2_TRACKER_ACTION_NAME;
 
         this.trackingSAM2 = true;
         const trackingStartedAt = performance.now();
         let trackingAttempted = false;
+        let cancelled = false;
+        let progressFinished = false;
         const directionLabel = direction === 1 ? 'forward' : 'backward';
         const progressKey = `sam2-tracking-${jobInstance.id}-${directionLabel}`;
+        const cancellationKey = `${progressKey}-cancel`;
         const showProgress = (message: string, percent: number): void => {
+            if (cancelled || progressFinished) {
+                return;
+            }
             if (percent >= 100) {
+                // Ant Design also invokes onClose when we destroy a completed notification.
+                progressFinished = true;
                 notification.destroy(progressKey);
                 return;
             }
 
             notification.info({
                 key: progressKey,
-                message: `SAM2 tracking ${directionLabel}`,
+                message: `${modelName} tracking ${objectDescription} ${directionLabel}`,
                 description: (
                     <>
                         <Progress percent={percent} size='small' status='active' />
                         {message}
+                        <div>Close this notification to cancel tracking.</div>
                     </>
                 ),
                 duration: 0,
                 placement: 'bottomRight',
+                onClose: () => {
+                    if (!progressFinished && !cancelled) {
+                        cancelled = true;
+                        notification.info({
+                            key: cancellationKey,
+                            message: `Cancelling ${modelName} tracking…`,
+                            description: 'Waiting for the current request to finish. No more frames will be requested.',
+                            duration: 0,
+                            closable: false,
+                            placement: 'bottomRight',
+                        });
+                    }
+                },
             });
         };
         showProgress(`Preparing up to ${sam2FrameCount} frames`, 0);
         try {
-            const action = (await core.actions.list()).find((item) => item.name === SAM2_TRACKER_ACTION_NAME);
-            if (!(action instanceof BaseCollectionAction) || !action.isApplicableForObject(objectState)) {
-                notification.error({ key: progressKey, message: 'SAM2 tracker is unavailable' });
+            const action = (await core.actions.list()).find((item) => item.name === actionName);
+            if (cancelled) {
+                return;
+            }
+            if (!(action instanceof BaseCollectionAction) ||
+                !trackingStates.every((state) => action.isApplicableForObject(state))) {
+                notification.error({ key: progressKey, message: `${modelName} tracker is unavailable` });
                 return;
             }
 
-            const currentJobFrames = (await jobInstance.frames.frameNumbers())
-                .filter((frame) => (direction === 1 ? frame > frameNumber : frame < frameNumber))
-                .sort((left, right) => direction * (left - right));
-            let availableCurrentJobFrames = 0;
-            for (const frame of currentJobFrames) {
-                if (!(await jobInstance.frames.get(frame)).deleted) {
-                    availableCurrentJobFrames++;
-                    if (availableCurrentJobFrames === sam2FrameCount) {
-                        break;
-                    }
-                }
-            }
-
-            let actionInstance: Job | Task = jobInstance;
-            let actionObjectState = objectState;
-            let targetFrame = direction === 1 ? jobInstance.stopFrame : jobInstance.startFrame;
-            let destinationJob = jobInstance;
-            if (availableCurrentJobFrames < sam2FrameCount && jobInstance.taskId !== null) {
-                const [taskInstance] = await core.tasks.get({ id: jobInstance.taskId });
-                const taskJobs = taskInstance.jobs
-                    .filter((job) => job.type === JobType.ANNOTATION && job.parentJobId === null)
-                    .sort((left, right) => left.startFrame - right.startFrame);
-                const taskBoundary = direction === 1 ?
-                    Math.max(...taskJobs.map((job) => job.stopFrame)) :
-                    Math.min(...taskJobs.map((job) => job.startFrame));
-                if (
-                    (direction === 1 && taskBoundary > jobInstance.stopFrame) ||
-                    (direction === -1 && taskBoundary < jobInstance.startFrame)
-                ) {
-                    await jobInstance.annotations.save();
-                    const refreshedJobState = (await jobInstance.annotations.get(frameNumber, false, []))
-                        .find((state) => state.clientID === objectState.clientID);
-                    const taskStates = await taskInstance.annotations.get(frameNumber, false, []);
-                    const matchingTaskState = taskStates.find((state) => (
-                        refreshedJobState?.serverID !== null &&
-                        state.serverID === refreshedJobState?.serverID
-                    ));
-                    if (!matchingTaskState) {
-                        throw new Error('Could not continue the selected object across jobs');
-                    }
-
-                    actionInstance = taskInstance;
-                    actionObjectState = matchingTaskState;
-                    targetFrame = taskBoundary;
-                }
-            }
-
-            const firstPredictedFrame = await actionInstance.frames.search(
+            const targetFrame = direction === 1 ? jobInstance.stopFrame : jobInstance.startFrame;
+            const firstPredictedFrame = frameNumber === targetFrame ? null : await jobInstance.frames.search(
                 { notDeleted: true },
                 frameNumber + direction,
                 targetFrame,
             );
+            if (cancelled) {
+                return;
+            }
             if (
                 firstPredictedFrame === null ||
-                firstPredictedFrame === frameNumber
+                firstPredictedFrame === frameNumber ||
+                !isAbleToChangeFrame(firstPredictedFrame)
             ) {
                 notification.warning({
                     key: progressKey,
@@ -704,82 +689,49 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 });
                 return;
             }
-            if (actionInstance instanceof Task) {
-                const matchingJob = actionInstance.jobs.find((job) => (
-                    job.type === JobType.ANNOTATION &&
-                    job.parentJobId === null &&
-                    firstPredictedFrame >= job.startFrame &&
-                    firstPredictedFrame <= job.stopFrame
-                ));
-                if (!matchingJob) {
-                    throw new Error('The next frame is not available in an annotation job');
-                }
-                destinationJob = matchingJob;
-            } else if (!isAbleToChangeFrame(firstPredictedFrame)) {
-                notification.warning({
-                    key: progressKey,
-                    message: `There is no frame to track ${direction === 1 ? 'forward' : 'backward'}`,
-                });
-                return;
-            }
-
             trackingAttempted = true;
-            await core.actions.call(actionInstance, action, {
+            await core.actions.call(jobInstance, action, {
                 'Convert polygon shapes to tracks': 'false',
                 'Target frame': String(targetFrame),
                 'Frame count': String(sam2FrameCount),
-            }, frameNumber, [actionObjectState], showProgress, () => false);
+            }, frameNumber, trackingStates, showProgress, () => cancelled);
+            if (cancelled) {
+                return;
+            }
+            showProgress(`Tracking with ${modelName}`, 100);
             jobInstance.logger.log(EventScope.sam2Tracking, {
                 duration: Math.round(performance.now() - trackingStartedAt),
                 outcome: 'success',
                 direction: directionLabel,
                 requested_frames: sam2FrameCount,
-                model_id: SAM2_TRACKER_MODEL_ID,
+                object_count: objectCount,
+                model_id: samTrackerModelID,
                 video_name: jobInstance.taskName || `Task ${jobInstance.taskId}`,
             });
-            let semanticGroupID = objectState.group?.id ?? null;
-            if (actionInstance instanceof Task) {
-                const prediction = (await actionInstance.annotations.get(firstPredictedFrame, false, []))
-                    .find((state) => state.clientID === actionObjectState.clientID);
-                semanticGroupID = prediction?.group?.id ?? semanticGroupID;
-                await actionInstance.annotations.save(undefined, true);
-            }
             if (playing) {
                 onSwitchPlay(false);
             }
-            if (destinationJob.id === jobInstance.id) {
-                if (actionInstance instanceof Task) {
-                    await jobInstance.annotations.clear({ reload: true });
-                }
-                this.changeFrame(firstPredictedFrame);
-                activateSAM2Prediction(objectState.clientID);
-            } else {
-                writeLatestFrame(destinationJob.id, firstPredictedFrame);
-                history.push(
-                    `/tasks/${jobInstance.taskId}/jobs/${destinationJob.id}?frame=${firstPredictedFrame}`,
-                    {
-                        sam2Prediction: {
-                            groupID: semanticGroupID,
-                            labelID: objectState.label.id,
-                        },
-                    } satisfies SAM2NavigationState,
-                );
-            }
+            await this.changeFrame(firstPredictedFrame);
+            activateSAM2Prediction(objectState.clientID);
             notification.success({
                 key: progressKey,
-                message: `SAM2 predictions ready ${directionLabel}`,
+                message: `${modelName} predictions ready for ${objectDescription} ${directionLabel}`,
                 description: `Opened frame ${firstPredictedFrame}`,
                 duration: 2,
                 placement: 'bottomRight',
             });
         } catch (error) {
+            if (cancelled) {
+                return;
+            }
             if (trackingAttempted) {
                 jobInstance.logger.log(EventScope.sam2Tracking, {
                     duration: Math.round(performance.now() - trackingStartedAt),
                     outcome: 'failed',
                     direction: directionLabel,
                     requested_frames: sam2FrameCount,
-                    model_id: SAM2_TRACKER_MODEL_ID,
+                    object_count: objectCount,
+                    model_id: samTrackerModelID,
                     video_name: jobInstance.taskName || `Task ${jobInstance.taskId}`,
                     error_type: error instanceof Error ? error.name : 'unknown',
                 });
@@ -789,7 +741,17 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 message: error instanceof Error ? error.message : String(error),
             });
         } finally {
+            progressFinished = true;
             this.trackingSAM2 = false;
+            if (cancelled) {
+                notification.info({
+                    key: cancellationKey,
+                    message: `${modelName} tracking cancelled`,
+                    description: 'Predictions from this run were discarded. You can start tracking again.',
+                    duration: 3,
+                    placement: 'bottomRight',
+                });
+            }
         }
     };
 
@@ -1019,12 +981,22 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             setNavigationType,
             switchShowSearchPallet,
             showSearchFrameByName,
+            sam2FrameCount,
+            onChangeSAM2FrameCount,
+            samTrackerModelID,
+            samTrackerModels,
+            onChangeSAMTrackerModel,
         } = this.props;
         const sam2KeyMap = workspace === Workspace.STANDARD ? subKeyMap(componentShortcuts, keyMap) : {};
 
         const topBar = (
             <AnnotationTopBarComponent
                 showStatistics={this.showStatistics}
+                sam2FrameCount={sam2FrameCount}
+                onChangeSAM2FrameCount={onChangeSAM2FrameCount}
+                samTrackerModelID={samTrackerModelID}
+                samTrackerModels={samTrackerModels}
+                onChangeSAMTrackerModel={onChangeSAMTrackerModel}
                 showFilters={this.showFilters}
                 onSwitchPlay={this.onSwitchPlay}
                 onPrevFrame={this.onPrevFrame}
@@ -1095,6 +1067,8 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                     handlers={{
                         SAM2_TRACK_BACKWARD: () => { this.onTrackSAM2(-1); },
                         SAM2_TRACK_FORWARD: () => { this.onTrackSAM2(1); },
+                        SAM2_TRACK_ALL_BACKWARD: () => { this.onTrackSAM2(-1, true); },
+                        SAM2_TRACK_ALL_FORWARD: () => { this.onTrackSAM2(1, true); },
                     }}
                 />
                 {topBar}

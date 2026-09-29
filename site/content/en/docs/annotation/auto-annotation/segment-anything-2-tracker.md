@@ -33,6 +33,20 @@ Choose the installation method based on your platform and deployment needs.
 
 The Community annotation action is registered automatically when the Nuclio function is deployed.
 
+An additional **SAM3.1 Object Multiplex** runner is available at
+`serverless/pytorch/facebookresearch/sam3_1/nuclio`. Its README covers checkpoint
+access, GPU deployment, and validation. Once deployed, choose **SAM3.1** in the
+model selector beside the frame-count dropdown; SAM2 Tiny remains the default.
+Both models use the same propagation shortcuts. SAM3.1 also exposes
+**Segment Anything 3.1: Text and points** under **AI tools → Interactors**.
+Choose a label, enter a description, and click **Find objects** to preview matching
+masks on the current frame. Adjust the confidence filter or correct one object
+with positive/negative clicks, then press **Enter** to accept or **Esc** to cancel.
+The first positive click chooses the object to refine. After accepting, individual
+masks can be refined or deleted before propagation. Text searches are limited to
+64 objects per frame; propagation tracks accepted masks and does not automatically
+discover new objects on later frames. SAM2 remains available for mask creation.
+
 ### Nuclio SAM2.1 Tracker (Community self-hosted)
 
 #### Docker
@@ -161,15 +175,36 @@ With that mask selected, use the frame-by-frame tracking shortcuts:
 | **D** | Move one frame backward |
 | **F** | Move one frame forward |
 | **G** | Track forward and open the first prediction |
+| **Shift+S** | Track all visible, unlocked polygons and masks backward |
+| **Shift+G** | Track all visible, unlocked polygons and masks forward |
 
-`S` and `G` run only when pressed; tracking does not start automatically.
+`S`, `G`, `Shift+S`, and `Shift+G` run only when pressed;
+tracking does not start automatically.
 Their keys are configurable in CVAT's shortcut settings, and the number of
-frames is configurable with **SAM2 shortcut frame count** under **Settings →
-Player**. Press **Enter** with a
+frames is configurable with the frame-count dropdown next to the playback controls
+or **SAM shortcut frame count** under **Settings → Player**. Both controls use
+the same setting; the dropdown offers 1, 5, 10, 25, 50, and 100 frames.
+Press **Enter** with a
 generated mask selected to confirm it; confirmed masks are never replaced by
 later tracking. If you correct a generated mask and run the shortcut again,
 the correction becomes the new temporal seed and only untouched predictions
 from the previous shortcut window are replaced.
+
+To annotate several objects together, create or correct their masks on the
+current frame, then press **Shift+G** to track forward or **Shift+S** to track
+backward. All eligible objects propagate using the same frame count. Within
+one job, the batch is one undoable operation. Hidden, locked, filtered-out,
+and outside objects are skipped. CVAT opens the first predicted frame for
+review and retains the selected object when available. Propagation stops at the
+current job's first or last frame, even if the requested frame count is larger.
+**Reset group** uses **Ctrl+Shift+G**.
+
+To cancel `S`, `G`, `Shift+S`, or `Shift+G`, close the progress notification in
+the bottom-right corner. The current inference request may finish, but no more
+requests will start and the entire unfinished batch is discarded. The current
+frame and existing annotations are kept. A **Cancelling SAM2 tracking…** message
+stays visible until that request finishes. When **SAM2 tracking cancelled**
+appears, you can start another batch.
 
 If tracking loses an object during an occlusion and you create a new mask when
 it reappears, use CVAT's native **Merge shapes/tracks** tool:

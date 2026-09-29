@@ -5,6 +5,9 @@
 
 import React from 'react';
 import { Col, Row } from 'antd/lib/grid';
+import Select from 'antd/lib/select';
+
+import CVATTooltip from 'components/common/cvat-tooltip';
 
 import {
     ActiveControl, NavigationType, ToolsBlockerState, Workspace,
@@ -18,6 +21,11 @@ import PlayerNavigation from './player-navigation';
 import RightGroup from './right-group';
 
 interface Props {
+    sam2FrameCount: number;
+    onChangeSAM2FrameCount(frameCount: number): void;
+    samTrackerModelID: string;
+    samTrackerModels: { value: string; label: string }[];
+    onChangeSAMTrackerModel(modelID: string): void;
     playing: boolean;
     saving: boolean;
     chapters: Chapter[];
@@ -83,6 +91,11 @@ interface Props {
 
 export default function AnnotationTopBarComponent(props: Props): JSX.Element {
     const {
+        sam2FrameCount,
+        onChangeSAM2FrameCount,
+        samTrackerModelID,
+        samTrackerModels,
+        onChangeSAMTrackerModel,
         saving,
         undoAction,
         redoAction,
@@ -175,6 +188,38 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
             setNavigationType={setNavigationType}
         />
     ), 0]);
+
+    if (workspace === Workspace.STANDARD) {
+        playerItems.push([(
+            <Col key='sam2-frame-count'>
+                <CVATTooltip title='Model used for propagation shortcuts'>
+                    <Select
+                        aria-label='SAM propagation model'
+                        className='cvat-sam-tracker-model'
+                        style={{ width: 120, marginRight: 4 }}
+                        value={samTrackerModelID}
+                        onChange={onChangeSAMTrackerModel}
+                        options={samTrackerModels}
+                    />
+                </CVATTooltip>
+                <CVATTooltip title='Frames per propagation. Changes also apply to shortcut settings.'>
+                    <Select
+                        aria-label='SAM propagation frame count'
+                        className='cvat-sam2-frame-count'
+                        style={{ width: 110, marginRight: 8 }}
+                        value={sam2FrameCount}
+                        onChange={onChangeSAM2FrameCount}
+                        options={[...new Set([1, 5, 10, 25, 50, 100, sam2FrameCount])]
+                            .sort((left, right) => left - right)
+                            .map((value) => ({
+                                value,
+                                label: `${value} frame${value === 1 ? '' : 's'}`,
+                            }))}
+                    />
+                </CVATTooltip>
+            </Col>
+        ), 5]);
+    }
 
     playerItems.push([(
         <PlayerNavigation

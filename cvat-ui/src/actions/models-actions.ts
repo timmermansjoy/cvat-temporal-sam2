@@ -10,7 +10,7 @@ import {
 import {
     getCore, MLModel, RQStatus,
 } from 'cvat-core-wrapper';
-import SAM2TrackerAction, { SAM2_TRACKER_MODEL_ID } from 'utils/annotations-actions/sam2-tracker';
+import SAM2TrackerAction, { SAM2_TRACKER_MODEL_ID, SAM31_TRACKER_MODEL_ID } from 'utils/annotations-actions/sam2-tracker';
 
 export enum ModelsActionTypes {
     GET_MODELS = 'GET_MODELS',
@@ -102,7 +102,7 @@ export const modelsActions = {
 export type ModelsActions = ActionUnion<typeof modelsActions>;
 
 const core = getCore();
-let sam2ActionRegistration: Promise<void> | null = null;
+const samActionRegistrations = new Map<string, Promise<void>>();
 
 export function getModelsAsync(query?: ModelsQuery): ThunkAction {
     return async (dispatch): Promise<void> => {
@@ -110,14 +110,18 @@ export function getModelsAsync(query?: ModelsQuery): ThunkAction {
         try {
             const result = await core.lambda.list();
             const { models, count } = result;
-            const sam2Model = models.find((model) => model.id === SAM2_TRACKER_MODEL_ID);
-            if (sam2Model) {
-                sam2ActionRegistration ??= core.actions.register(new SAM2TrackerAction(sam2Model))
-                    .catch((error) => {
-                        sam2ActionRegistration = null;
-                        throw error;
-                    });
-                await sam2ActionRegistration;
+            for (const modelID of [SAM2_TRACKER_MODEL_ID, SAM31_TRACKER_MODEL_ID]) {
+                const model = models.find((candidate) => candidate.id === modelID);
+                if (model) {
+                    if (!samActionRegistrations.has(modelID)) {
+                        samActionRegistrations.set(modelID, core.actions.register(new SAM2TrackerAction(model))
+                            .catch((error) => {
+                                samActionRegistrations.delete(modelID);
+                                throw error;
+                            }));
+                    }
+                    await samActionRegistrations.get(modelID);
+                }
             }
             dispatch(modelsActions.getModelsSuccess(models, count));
         } catch (error) {

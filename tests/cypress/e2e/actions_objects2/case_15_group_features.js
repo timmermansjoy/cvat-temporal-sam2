@@ -82,7 +82,7 @@ context('Group features', () => {
             cy.get(shapeToGroup).click();
             cy.get(shapeToGroup).should('have.class', 'cvat_canvas_shape_selection');
         }
-        cy.get('body').type('{Shift}g');
+        cy.get('body').type('{Ctrl}{Shift}g');
     }
 
     function changeGroupColor(object, color) {

@@ -15,6 +15,7 @@ import Icon, {
 import Popover from 'antd/lib/popover';
 import Select from 'antd/lib/select';
 import Button from 'antd/lib/button';
+import Input from 'antd/lib/input';
 import Modal from 'antd/lib/modal';
 import Text from 'antd/lib/typography/Text';
 import Tabs from 'antd/lib/tabs';
@@ -31,6 +32,7 @@ import {
     MinimalShape, InteractorResults, TrackerResults, DimensionType,
 } from 'cvat-core-wrapper';
 import openCVWrapper from 'utils/opencv-wrapper/opencv-wrapper';
+import { SAM31_TRACKER_MODEL_ID } from 'utils/annotations-actions/sam2-tracker';
 import {
     CombinedState, ActiveControl, ToolsBlockerState, PluginComponent,
 } from 'reducers';
@@ -182,6 +184,7 @@ interface State {
     interactorRegionOfInterest: RegionOfInterest;
     detectorRegionOfInterest: RegionOfInterest;
     toolsPopoverVisible: boolean;
+    textPrompt: string;
 }
 
 type DetectorResults = Extract<
@@ -263,6 +266,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 neg_points: number[][];
                 pos_points: number[][];
                 obj_bbox: number[][];
+                text_prompts?: string[];
             };
         } | null;
         closeFetchingMessage: (() => void) | null;
@@ -293,6 +297,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             interactorRegionOfInterest: null,
             detectorRegionOfInterest: null,
             toolsPopoverVisible: false,
+            textPrompt: '',
         };
 
         this.interaction = {
@@ -385,6 +390,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 showConfidenceControl: false,
             });
             window.addEventListener('contextmenu', this.contextmenuDisabler);
+            if (mode === 'interaction' && this.activeTextPrompt) {
+                this.interactionListener(new CustomEvent('canvas.interacted', {
+                    detail: { shapes: [], finished: false },
+                }));
+            }
         }
 
         if (
@@ -539,12 +549,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     };
 
     private cancelListener = async (): Promise<void> => {
-        const { fetching } = this.state;
-        if (fetching) {
-            // user pressed ESC
-            this.setState({ fetching: false });
-            this.interaction.isAborted = true;
-        }
+        this.interaction.isAborted = true;
+        this.interaction.latestRequest = null;
+        this.setState({ fetching: false });
     };
 
     private runInteractionRequest = async (interactionId: string): Promise<void> => {
@@ -552,7 +559,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const { activeInteractor, fetching } = this.state;
 
         const { id, latestRequest } = this.interaction;
-        if (id !== interactionId || !latestRequest || fetching) {
+        if (id !== interactionId || this.interaction.isAborted || !latestRequest || fetching) {
             // id !== interactionId: request not relevant anymore (new session has started)
             // !latestRequest: nothing to process
             // fetching: another request is already running
@@ -574,6 +581,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 this.setState({ fetching: true });
 
                 await this.initializeOpenCV();
+                if (this.interaction.id !== interactionId || this.interaction.isAborted) return;
                 const response = await core.lambda.call(
                     jobInstance.taskId,
                     interactor,
@@ -617,14 +625,14 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 if (this.interaction.id === interactionId) {
                     this.interaction.closeFetchingMessage?.();
                     this.interaction.closeFetchingMessage = null;
+                    this.setState({ fetching: false });
                 }
-
-                this.setState({ fetching: false });
             }
 
             this.drawIntermediateShapesOnCanvas();
             setTimeout(() => this.runInteractionRequest(interactionId));
         } catch (error: any) {
+            if (this.interaction.id !== interactionId || this.interaction.isAborted) return;
             notification.error({
                 description: <CVATMarkdown>{error.message}</CVATMarkdown>,
                 message: 'Interaction error occurred',
@@ -632,6 +640,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             });
         }
     };
+
+    private get activeTextPrompt(): string {
+        return this.state.activeInteractor?.id === `${SAM31_TRACKER_MODEL_ID}--interactor` &&
+            this.props.refinementTargetID === null ? this.state.textPrompt.trim() : '';
+    }
 
     private onInteraction = (e: Event): void => {
         const { frame, isActivated } = this.props;
@@ -658,6 +671,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 obj_bbox: boxes,
                 pos_points: posPoints,
                 neg_points: negPoints,
+                ...(this.activeTextPrompt ? { text_prompts: [this.activeTextPrompt] } : {}),
                 ...(interactorRegionOfInterest ? { roi: interactorRegionOfInterest } : {}),
             },
         };
@@ -814,6 +828,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         this.setState({
             activeInteractor: interactor,
+            textPrompt: '',
         });
     };
 
@@ -1346,7 +1361,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         } = this.props;
         const {
             activeInteractor, activeLabelID, fetching, allowROI,
-            startInteractingWithBox, convertMasksToPolygons,
+            startInteractingWithBox, convertMasksToPolygons, textPrompt,
         } = this.state;
 
         if (!interactors.length) {
@@ -1369,6 +1384,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             !state.lock
         ));
         const isRefining = refinementTargetID !== null;
+        const supportsText = activeInteractor?.id === `${SAM31_TRACKER_MODEL_ID}--interactor`;
+        const createButtonLabel = this.activeTextPrompt ? 'Find objects' : 'Create mask';
 
         const renderedInteractorExtras = interactorExtras
             .sort((a, b) => a.data.weight - b.data.weight)
@@ -1428,6 +1445,25 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         </Popover>
                     </Col>
                 </Row>
+                {supportsText && !isRefining && (
+                    <Row>
+                        <Col span={24}>
+                            <Text>Text prompt (optional)</Text>
+                            <Input
+                                className='cvat-sam-text-prompt'
+                                aria-label='SAM text prompt'
+                                placeholder='For example: person or red car'
+                                maxLength={256}
+                                value={textPrompt}
+                                onChange={(event) => this.setState({ textPrompt: event.target.value })}
+                            />
+                            <Text type='secondary'>
+                                Find up to 64 matching objects. The first positive click selects one to refine.
+                                Press Enter to accept the masks or Escape to cancel.
+                            </Text>
+                        </Col>
+                    </Row>
+                )}
                 <div className='cvat-tools-interactor-setups'>
                     {allowROI && this.renderROIControls()}
                     {!isRefining && (
@@ -1442,7 +1478,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         </div>
                     )}
 
-                    {renderStartWithBox && (
+                    {renderStartWithBox && !this.activeTextPrompt && !(supportsText && isRefining) && (
                         <div>
                             <Switch
                                 checked={startInteractingWithBox}
@@ -1481,9 +1517,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                     this.setState({ mode: 'interaction' });
                                     this.setState({ toolsPopoverVisible: false });
                                     canvasInstance.cancel();
-                                    const startWithBox = activeInteractor.params.canvas.startWithBoxOptional ? (
-                                        startInteractingWithBox
-                                    ) : activeInteractor.params.canvas.startWithBox ?? false;
+                                    const startWithBox = !this.activeTextPrompt && !(supportsText && isRefining) && (
+                                        activeInteractor.params.canvas.startWithBoxOptional ? (
+                                            startInteractingWithBox
+                                        ) : activeInteractor.params.canvas.startWithBox ?? false
+                                    );
 
                                     const parameters = {
                                         command: startWithBox ? 'draw_box' as const : 'draw_points' as const,
@@ -1502,7 +1540,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                 }
                             }}
                         >
-                            {isRefining ? `Start refining mask #${refinementTargetID}` : 'Create mask'}
+                            {isRefining ? `Start refining mask #${refinementTargetID}` : createButtonLabel}
                         </Button>
                     </Col>
                 </Row>

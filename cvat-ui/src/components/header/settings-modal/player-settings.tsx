@@ -95,7 +95,7 @@ export default function PlayerSettingsComponent(props: Props): JSX.Element {
     items.push([(
         <Row key='sam2-frame-count' align='bottom' className='cvat-player-setting'>
             <Col>
-                <Text className='cvat-text-color'> SAM2 shortcut frame count </Text>
+                <Text className='cvat-text-color'> SAM shortcut frame count </Text>
                 <InputNumber
                     min={1}
                     max={100}
@@ -108,7 +108,7 @@ export default function PlayerSettingsComponent(props: Props): JSX.Element {
                 />
             </Col>
             <Col offset={1}>
-                <Text type='secondary'>Maximum frames tracked when pressing S or G</Text>
+                <Text type='secondary'>Maximum frames tracked with S/G or Shift+S/G, within the current job</Text>
             </Col>
         </Row>
     ), 5]);

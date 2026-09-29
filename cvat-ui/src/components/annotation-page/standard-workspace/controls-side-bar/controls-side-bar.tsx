@@ -101,7 +101,7 @@ const componentShortcuts = {
     RESET_GROUP_STANDARD_CONTROLS: {
         name: 'Reset group',
         description: 'Reset group for selected shapes (in group mode)',
-        sequences: ['shift+g'],
+        sequences: ['ctrl+shift+g'],
         scope: ShortcutScope.STANDARD_WORKSPACE_CONTROLS,
     },
     SWITCH_MERGE_MODE_STANDARD_CONTROLS: {

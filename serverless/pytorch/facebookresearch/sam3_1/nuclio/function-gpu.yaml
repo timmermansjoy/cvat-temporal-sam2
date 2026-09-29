@@ -1,0 +1,88 @@
+# Copyright (C) CVAT.ai Corporation
+#
+# SPDX-License-Identifier: MIT
+
+metadata:
+  name: pth-facebookresearch-sam3-1
+  namespace: cvat
+  annotations:
+    name: 'Segment Anything 3.1: Tracker'
+    type: tracker
+    additional_types: interactor
+    interactor_name: 'Segment Anything 3.1: Text and points'
+    version: 3
+    min_pos_points: 0
+    min_neg_points: 0
+    startswith_box_optional: true
+    help_message: Describe objects to find up to 64 matching masks. The first positive click selects a mask to refine; further positive and negative clicks refine that object. Accept masks with Enter, cancel with Escape.
+    supported_shape_types: mask, polygon
+
+spec:
+  description: Text, box and point segmentation with joint mask tracking using SAM 3.1 Object Multiplex
+  runtime: 'python:3.12'
+  handler: main:handler
+  eventTimeout: 5m
+  env:
+    - name: SAM31_CHECKPOINT
+      value: /opt/nuclio/models/sam3.1_multiplex.pt
+
+  build:
+    image: cvat.pth.facebookresearch.sam3-1:latest-gpu
+    baseImage: ubuntu:24.04
+    directives:
+      preCopy:
+        - kind: ENV
+          value: DEBIAN_FRONTEND=noninteractive
+        - kind: ENV
+          value: NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
+        - kind: RUN
+          value: |-
+            apt-get update \
+              && apt-get install -y --no-install-recommends \
+                git ca-certificates build-essential python3 python3-dev python3-venv \
+              && rm -rf /var/lib/apt/lists/* \
+              && python3 -m venv /opt/venv
+        - kind: ENV
+          value: PATH=/opt/venv/bin:$PATH
+        - kind: RUN
+          value: |-
+            pip install --no-cache-dir \
+              torch==2.10.0 torchvision==0.25.0 \
+              --index-url https://download.pytorch.org/whl/cu128
+        - kind: RUN
+          value: |-
+            pip install --no-cache-dir \
+              'setuptools<81' numpy==1.26.4 Pillow==11.3.0 \
+              opencv-python-headless==4.11.0.86 redis==5.2.0 \
+              einops scipy pycocotools psutil \
+              git+https://github.com/facebookresearch/sam3.git@2345a4ad109ac29c569da749c91d84f10dc08c40
+
+  # Download the gated checkpoint on the Docker host before deploying.
+  volumes:
+    - volume:
+        name: sam31-models
+        hostPath:
+          path: /opt/cvat/models/sam3.1
+      volumeMount:
+        name: sam31-models
+        mountPath: /opt/nuclio/models
+        readOnly: true
+
+  triggers:
+    myHttpTrigger:
+      numWorkers: 1
+      kind: http
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        maxRequestBodySize: 268435456
+
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+
+  platform:
+    attributes:
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume

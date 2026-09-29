@@ -32,6 +32,7 @@ export enum SettingsActionTypes {
     CHANGE_SHOW_GROUND_TRUTH = 'CHANGE_SHOW_GROUND_TRUTH',
     CHANGE_FRAME_STEP = 'CHANGE_FRAME_STEP',
     CHANGE_SAM2_FRAME_COUNT = 'CHANGE_SAM2_FRAME_COUNT',
+    CHANGE_SAM_TRACKER_MODEL = 'CHANGE_SAM_TRACKER_MODEL',
     CHANGE_FRAME_SPEED = 'CHANGE_FRAME_SPEED',
     SWITCH_RESET_ZOOM = 'SWITCH_RESET_ZOOM',
     SWITCH_SMOOTH_IMAGE = 'SWITCH_SMOOTH_IMAGE',
@@ -197,6 +198,13 @@ export function changeSAM2FrameCount(sam2FrameCount: number): AnyAction {
         payload: {
             sam2FrameCount,
         },
+    };
+}
+
+export function changeSAMTrackerModel(samTrackerModelID: string): AnyAction {
+    return {
+        type: SettingsActionTypes.CHANGE_SAM_TRACKER_MODEL,
+        payload: { samTrackerModelID },
     };
 }
 
@@ -505,6 +513,12 @@ export function restoreSettingsAsync(): ThunkAction {
                     const { sequences } = value as { sequences: string[] };
                     updateKeyMap[key].sequences = key === 'SWITCH_GROUP_MODE_STANDARD_CONTROLS' ?
                         sequences.map((sequence) => (sequence === 'g' ? 'alt+g' : sequence)) : sequences;
+                    if (key === 'RESET_GROUP_STANDARD_CONTROLS' &&
+                        !('SAM2_TRACK_ALL_FORWARD' in loadedSettings.shortcuts.keyMap)) {
+                        updateKeyMap[key].sequences = sequences.map((sequence) => (
+                            sequence === 'shift+g' ? 'ctrl+shift+g' : sequence
+                        ));
+                    }
                 }
             });
 

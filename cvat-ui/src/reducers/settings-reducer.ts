@@ -53,6 +53,7 @@ const defaultState: SettingsState = {
         canvasBackgroundColor: '#ffffff',
         frameStep: 10,
         sam2FrameCount: 5,
+        samTrackerModelID: 'pth-facebookresearch-sam2',
         frameSpeed: FrameSpeed.Usual,
         resetZoom: false,
         rotateAll: false,
@@ -209,6 +210,12 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                     ...state.player,
                     sam2FrameCount: action.payload.sam2FrameCount,
                 },
+            };
+        }
+        case SettingsActionTypes.CHANGE_SAM_TRACKER_MODEL: {
+            return {
+                ...state,
+                player: { ...state.player, samTrackerModelID: action.payload.samTrackerModelID },
             };
         }
         case SettingsActionTypes.CHANGE_FRAME_SPEED: {
