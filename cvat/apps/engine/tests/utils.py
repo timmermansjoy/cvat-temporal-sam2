@@ -31,7 +31,7 @@ from rest_framework.response import Response
 from rest_framework.test import APITestCase
 from scipy.optimize import linear_sum_assignment
 
-from cvat.apps.engine.models import User
+from cvat.apps.iam.models import User
 
 T = TypeVar("T")
 
@@ -108,6 +108,11 @@ def clear_rq_jobs():
             scheduler.remove_lock()
 
 
+def set_rq_async_mode(is_async: bool) -> None:
+    for config in settings.RQ_QUEUES.values():
+        config["ASYNC"] = is_async
+
+
 class ApiTestBase(APITestCase):
     def _clear_temp_data(self):
         # Clear server frame/chunk cache.
@@ -164,7 +169,7 @@ class ApiTestBase(APITestCase):
             response = self.client.post(path, data=data, format=format, query_params=query_params)
         return response
 
-    def _patch_request(self, path: str, user: str, *, data: dict[str, Any] | None = None):
+    def _patch_request(self, path: str, user: User, *, data: dict[str, Any] | None = None):
         with ForceLogin(user, self.client):
             response = self.client.patch(path, data=data, format="json")
         return response

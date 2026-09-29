@@ -15,13 +15,15 @@ import {
     showFilters as showFiltersAction,
     showStatistics as showStatisticsAction,
 } from 'actions/annotation-actions';
-import { audioActions, audioRedoAsync, audioUndoAsync } from 'actions/audio-actions';
+import {
+    audioActions, audioRedoAsync, audioUndoAsync, toggleAudioPlayback,
+} from 'actions/audio-actions';
+import type { AudioSeekRequest } from 'actions/audio-actions';
 import AudioTopBarComponent from 'audio/components/annotation-page/audio-workspace/top-bar/audio-top-bar';
 import { Job } from 'cvat-core-wrapper';
 import { CombinedState, Workspace } from 'reducers';
 import { KeyMap } from 'utils/mousetrap-react';
 import { writeLatestFrame } from 'utils/remember-latest-frame';
-import { getCVATStore } from 'cvat-store';
 
 interface StateToProps {
     jobInstance: Job;
@@ -38,9 +40,7 @@ interface StateToProps {
     forceExit: boolean;
     annotationFilters: object[];
     initialOpenGuide: boolean;
-    audioCurrentTime: number;
     audioDuration: number;
-    audioZoom: number;
 }
 
 interface DispatchToProps {
@@ -52,7 +52,7 @@ interface DispatchToProps {
     setForceExitAnnotationFlag(forceExit: boolean): void;
     changeWorkspace(workspace: Workspace): void;
     onAudioPlayPause(): void;
-    onAudioSeek(time: number): void;
+    onAudioSeek(request: AudioSeekRequest): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -72,9 +72,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         audio: {
             player: {
                 playing,
-                currentTime: audioCurrentTime,
                 duration: audioDuration,
-                zoom: audioZoom,
             },
         },
         settings: {
@@ -100,9 +98,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         forceExit,
         annotationFilters,
         initialOpenGuide,
-        audioCurrentTime,
         audioDuration,
-        audioZoom,
     };
 }
 
@@ -131,12 +127,10 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
             dispatch(setForceExitAnnotationFlagAction(forceExit));
         },
         onAudioPlayPause(): void {
-            const store = getCVATStore();
-            const { player } = store.getState().audio;
-            dispatch(audioActions.switchAudioPlay(!player.playing));
+            dispatch(toggleAudioPlayback());
         },
-        onAudioSeek(time: number): void {
-            dispatch(audioActions.setAudioCurrentTime(time));
+        onAudioSeek(request: AudioSeekRequest): void {
+            dispatch(audioActions.seekAudio(request));
         },
     };
 }
@@ -250,9 +244,7 @@ class AudioTopBarContainer extends React.PureComponent<Props> {
             normalizedKeyMap,
             annotationFilters,
             initialOpenGuide,
-            audioCurrentTime,
             audioDuration,
-            audioZoom,
             onAudioPlayPause,
             onAudioSeek,
             showFilters,
@@ -268,11 +260,14 @@ class AudioTopBarContainer extends React.PureComponent<Props> {
                 keyMap={keyMap}
                 undoAction={undoAction}
                 redoAction={redoAction}
-                undoShortcut={normalizedKeyMap.AUDIO_UNDO ?? normalizedKeyMap.UNDO ?? ''}
-                redoShortcut={normalizedKeyMap.AUDIO_REDO ?? normalizedKeyMap.REDO ?? ''}
-                audioCurrentTime={audioCurrentTime ?? 0}
+                undoShortcut={normalizedKeyMap.AUDIO_UNDO ?? normalizedKeyMap.UNDO}
+                redoShortcut={normalizedKeyMap.AUDIO_REDO ?? normalizedKeyMap.REDO}
+                playPauseShortcut={normalizedKeyMap.PLAY_PAUSE_AUDIO}
+                backwardShortcut={normalizedKeyMap.AUDIO_BACKWARD}
+                forwardShortcut={normalizedKeyMap.AUDIO_FORWARD}
+                fastBackwardShortcut={normalizedKeyMap.AUDIO_FAST_BACKWARD}
+                fastForwardShortcut={normalizedKeyMap.AUDIO_FAST_FORWARD}
                 audioDuration={audioDuration ?? 0}
-                audioZoom={audioZoom ?? 1}
                 annotationFilters={annotationFilters}
                 initialOpenGuide={initialOpenGuide}
                 changeWorkspace={this.changeWorkspace}

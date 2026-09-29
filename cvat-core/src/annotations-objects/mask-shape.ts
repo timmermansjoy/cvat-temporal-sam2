@@ -14,6 +14,8 @@ import { Shape } from './shape';
 import { computeNewSource } from './utils';
 import type { AnnotationInjection } from './types';
 
+type ValidatedMaskPoints = number[] & { initialPoints: number[] };
+
 export class MaskShape extends Shape {
     public left: number;
     public top: number;
@@ -34,11 +36,19 @@ export class MaskShape extends Shape {
 
     protected validateStateBeforeSave(data: ObjectState, updated: ObjectState['updateFlags'], frame?: number): number[] {
         super.validateStateBeforeSave(data, updated, frame);
+        let maskPoints: number[] = [];
         if (updated.points) {
             const { width, height } = this.framesInfo[frame];
-            return cropMask(data.points, width, height);
+            maskPoints = cropMask(data.points, width, height);
+            if (maskPoints.length < 6) {
+                // empty RLE after cropping (e.g. mask moved is outside of the frame) is invalid result
+                maskPoints = [];
+            }
         }
-        return [];
+
+        // keep original points to distinguish between redraw and drag feature
+        // they use similar update path, but the second should not apply removing underlying pixels
+        return Object.assign(maskPoints, { initialPoints: data.points });
     }
 
     public removeUnderlyingPixels(frame: number):
@@ -91,16 +101,28 @@ export class MaskShape extends Shape {
         const wrapper = {
             stashedPoints: Object.values(updatedObjects).map((object) => object.points),
             stashedRemoved: Object.values(updatedObjects).map((object) => object.removed),
+            stashedBoxes: Object.values(updatedObjects).map((object) => ([
+                object.left, object.top, object.right, object.bottom,
+            ])),
         };
 
+        const { width: frameWidth, height: frameHeight } = this.framesInfo[frame];
         let emptyMaskOccurred = false;
         for (const object of Object.values(updatedObjects)) {
-            const points = mask2Rle(masks[object.clientID]);
-            if (points.length < 2) {
+            const rle = mask2Rle(masks[object.clientID]);
+            if (rle.length < 2) {
                 object.removed = true;
                 emptyMaskOccurred = true;
             } else {
-                object.points = points;
+                const croppedPoints = cropMask([
+                    ...rle, object.left, object.top, object.right, object.bottom,
+                ], frameWidth, frameHeight);
+                const [left, top, right, bottom] = croppedPoints.splice(-4, 4);
+                object.points = croppedPoints;
+                object.left = left;
+                object.top = top;
+                object.right = right;
+                object.bottom = bottom;
                 object.updated = Date.now();
             }
         }
@@ -109,13 +131,22 @@ export class MaskShape extends Shape {
         const undo = (): void => {
             const updatedStashedPoints = Object.values(updatedObjects).map((object) => object.points);
             const updatedStashedRemoved = Object.values(updatedObjects).map((object) => object.removed);
+            const updatedStashedBoxes = Object.values(updatedObjects).map((object) => ([
+                object.left, object.top, object.right, object.bottom,
+            ]));
             for (const [index, object] of Object.values(updatedObjects).entries()) {
                 object.points = wrapper.stashedPoints[index];
                 object.removed = wrapper.stashedRemoved[index];
+                const [left, top, right, bottom] = wrapper.stashedBoxes[index];
+                object.left = left;
+                object.top = top;
+                object.right = right;
+                object.bottom = bottom;
                 object.updated = Date.now();
             }
             wrapper.stashedPoints = updatedStashedPoints;
             wrapper.stashedRemoved = updatedStashedRemoved;
+            wrapper.stashedBoxes = updatedStashedBoxes;
         };
 
         const redo = undo;
@@ -128,6 +159,18 @@ export class MaskShape extends Shape {
     }
 
     protected savePoints(maskPoints: number[], frame: number): void {
+        const validatedMaskPoints = maskPoints as ValidatedMaskPoints;
+        const { initialPoints } = validatedMaskPoints;
+        delete validatedMaskPoints.initialPoints;
+
+        const [initialLeft, initialTop, initialRight, initialBottom] = initialPoints.slice(-4);
+        const initialRLE = initialPoints.slice(0, -4);
+        const isTranslation =
+            initialRight - initialLeft === this.right - this.left &&
+            initialBottom - initialTop === this.bottom - this.top &&
+            initialRLE.length === this.points.length &&
+            initialRLE.every((value, index) => value === this.points[index]);
+
         const undoPoints = this.points;
         const undoLeft = this.left;
         const undoRight = this.right;
@@ -162,7 +205,7 @@ export class MaskShape extends Shape {
         };
 
         redo();
-        if (config.removeUnderlyingMaskPixels.enabled) {
+        if (config.removeUnderlyingMaskPixels.enabled && !isTranslation) {
             const {
                 clientIDs,
                 emptyMaskOccurred,

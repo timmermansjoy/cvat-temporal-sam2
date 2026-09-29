@@ -11,6 +11,7 @@ import {
     CanvasModel, CanvasModelImpl, RectDrawingMethod,
     CuboidDrawingMethod, Configuration, Geometry, Mode,
     HighlightSeverity as _HighlightSeverity, CanvasHint as _CanvasHint,
+    CanvasHistorySource,
     PolyEditData, RenderData as _RenderData,
 } from './canvasModel';
 import { Master } from './master';
@@ -49,6 +50,8 @@ interface Canvas {
     zoomCanvas(enable: boolean): void;
 
     mode(): Mode;
+    undo(): boolean;
+    redo(): boolean;
     cancel(): void;
     configure(configuration: Configuration): void;
     isAbleToChangeFrame(): boolean;
@@ -172,6 +175,14 @@ class CanvasImpl implements Canvas {
         return this.model.mode;
     }
 
+    public undo(): boolean {
+        return this.view.undo();
+    }
+
+    public redo(): boolean {
+        return this.view.redo();
+    }
+
     public cancel(): void {
         this.model.cancel();
     }
@@ -200,5 +211,5 @@ export type HighlightSeverity = _HighlightSeverity;
 export type RenderData = _RenderData;
 
 export {
-    CanvasImpl as Canvas, RectDrawingMethod, CuboidDrawingMethod, Mode as CanvasMode,
+    CanvasImpl as Canvas, RectDrawingMethod, CuboidDrawingMethod, Mode as CanvasMode, CanvasHistorySource,
 };

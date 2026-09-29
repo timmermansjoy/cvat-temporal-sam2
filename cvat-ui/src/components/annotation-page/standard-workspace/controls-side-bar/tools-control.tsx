@@ -72,7 +72,7 @@ interface StateToProps {
     interactors: MLModel[];
     detectors: MLModel[];
     trackers: MLModel[];
-    curZOrder: number;
+    currentZOrder: number;
     defaultApproxPolyAccuracy: number;
     toolsBlockerState: ToolsBlockerState;
     frameData: { width: number; height: number; deleted?: boolean };
@@ -104,7 +104,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 frame: { number: frame, data: frameData },
             },
             annotations: {
-                zLayer: { cur: curZOrder },
+                zLayer: { cur: currentZOrder },
                 states,
             },
             drawing: { activeLabelID, refinementTargetID },
@@ -138,7 +138,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         canvasInstance: canvasInstance as Canvas,
         jobInstance: jobInstance as Job,
         frame,
-        curZOrder,
+        currentZOrder,
         defaultApproxPolyAccuracy,
         toolsBlockerState,
         frameData,
@@ -256,6 +256,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         latestResponse: {
             rle: Int32Array;
             points: [number, number][];
+            contours: [number, number][][];
             approximatedPoints: [number, number][];
             confidence: number;
         }[];
@@ -599,18 +600,20 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     if (item.type !== ShapeType.MASK) continue;
 
                     const points = Int32Array.from(item.points);
-                    const polygonPoints = this.receivePointsFromMask(points);
+                    const contours = this.receiveContoursFromMask(points);
+                    const polygonPoints = this.receivePointsFromMask(contours);
                     if (polygonPoints.length < 3) {
                         continue;
                     }
 
-                    const approximated = this.approximateResponsePoints(polygonPoints!);
+                    const approximated = this.approximateResponsePoints(polygonPoints);
                     const confidenceAttr = item.attributes.find((attr) => attr.spec_id === 0);
                     const confidence = confidenceAttr ? +confidenceAttr.value : 1;
                     showConfidenceControl = showConfidenceControl || !!confidenceAttr;
                     latestResponse.push({
                         rle: points,
                         points: polygonPoints,
+                        contours,
                         approximatedPoints: approximated,
                         confidence,
                     });
@@ -682,7 +685,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     private onTracking = async (e: Event): Promise<void> => {
         const { trackedShapes, activeTracker, activeLabelID } = this.state;
         const {
-            isActivated, jobInstance, frame, curZOrder, fetchAnnotations,
+            isActivated, jobInstance, frame, currentZOrder, fetchAnnotations,
         } = this.props;
 
         if (!isActivated || !activeLabelID || !activeTracker) {
@@ -707,7 +710,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     shapeType: ShapeType.RECTANGLE,
                     objectType: ObjectType.TRACK,
                     source: core.enums.Source.SEMI_AUTO,
-                    zOrder: curZOrder,
+                    zOrder: currentZOrder,
                     label,
                     points,
                     frame,
@@ -845,9 +848,10 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const shapesToBeDrawn = this.interaction.latestResponse
             .filter(({ confidence }) => typeof confidence !== 'number' || confidence >= thresholdValue)
             .filter(({ approximatedPoints }) => !convertMasksToPolygons || approximatedPoints.length >= 3)
-            .map(({ rle, approximatedPoints }) => ({
+            .map(({ rle, contours, approximatedPoints }) => ({
                 shapeType: convertMasksToPolygons ? ShapeType.POLYGON : ShapeType.MASK,
                 points: convertMasksToPolygons ? approximatedPoints.flat() : rle,
+                maskOutlines: contours.map((contour) => contour.flat()),
             }));
 
         canvasInstance.interact({
@@ -1142,7 +1146,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     private async constructFromLatestResponse(): Promise<void> {
         const { convertMasksToPolygons, thresholdValue } = this.state;
         const {
-            frame, labels, states, curZOrder, activeLabelID, createAnnotations, updateAnnotations,
+            frame, labels, states, currentZOrder, activeLabelID, createAnnotations, updateAnnotations,
         } = this.props;
 
         if (!this.interaction.latestResponse.length) {
@@ -1155,7 +1159,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             source: core.enums.Source.SEMI_AUTO,
             label: labels.find((label) => label.id === activeLabelID as number) as Label,
             occluded: false,
-            zOrder: curZOrder,
+            zOrder: currentZOrder,
         };
 
         const objectsToConstruct = this.interaction.latestResponse.filter(
@@ -1228,7 +1232,15 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         }
     }
 
-    private receivePointsFromMask(mask: Int32Array): [number, number][] {
+    private receivePointsFromMask(contours: [number, number][][]): [number, number][] {
+        if (contours.length) {
+            return contours[0].map<[number, number]>((val) => [val[0], val[1]]);
+        }
+
+        return [];
+    }
+
+    private receiveContoursFromMask(mask: Int32Array): [number, number][][] {
         if (!openCVWrapper.isInitialized) {
             throw new Error('OpenCV was not initialized');
         }
@@ -1238,12 +1250,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             return [];
         }
 
-        const polygons = openCVWrapper.getContoursFromStateSync({ points: mask, shapeType: ShapeType.MASK });
-        if (polygons.length) {
-            return polygons[0].map<[number, number]>((val) => [val[0], val[1]]);
-        }
-
-        return [];
+        return openCVWrapper.getContoursFromStateSync({ points: mask, shapeType: ShapeType.MASK });
     }
 
     private approximateResponsePoints(points: [number, number][]): [number, number][] {
@@ -1550,7 +1557,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderDetectorBlock(): JSX.Element {
         const {
-            jobInstance, detectors, curZOrder, frame, labels, frameData,
+            jobInstance, detectors, currentZOrder, frame, labels, frameData,
             createAnnotations,
         } = this.props;
 
@@ -1638,7 +1645,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                 rotation: shape.rotation,
                                 shapeType: shape.type,
                                 source: core.enums.Source.AUTO,
-                                zOrder: curZOrder,
+                                zOrder: currentZOrder,
                             });
                         });
 

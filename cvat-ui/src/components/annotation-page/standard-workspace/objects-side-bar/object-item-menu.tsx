@@ -13,10 +13,11 @@ import Icon, {
 
 import {
     BackgroundIcon, ForegroundIcon, ResetPerspectiveIcon, ColorizeIcon, SliceIcon,
-    OneLayerBackwardIcon, OneLayerForwardIcon, SimplifyIcon,
+    OneLayerBackwardIcon, OneLayerForwardIcon, SimplifyIcon, RotateIcon,
 } from 'icons';
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { ColorBy } from 'reducers';
+import type { OrientationAngle } from 'utils/change-object-orientation';
 import {
     DimensionType, Job, ObjectType, ShapeType,
 } from 'cvat-core-wrapper';
@@ -48,6 +49,7 @@ interface Props {
     propagate(): void;
     createURL(): void;
     switchOrientation(): void;
+    changeOrientation(degrees: OrientationAngle): void;
     toBackground(): void;
     toForeground(): void;
     toOneLayerBackward(): void;
@@ -66,6 +68,21 @@ interface Props {
 interface ItemProps {
     toolProps: Props;
 }
+
+const ORIENTATION_OPTIONS: Record<OrientationAngle, { icon: JSX.Element; label: string }> = {
+    90: {
+        icon: <Icon component={RotateIcon} className='cvat-object-item-menu-orientation-icon clockwise' />,
+        label: '90°',
+    },
+    '-90': {
+        icon: <Icon component={RotateIcon} className='cvat-object-item-menu-orientation-icon' />,
+        label: '90°',
+    },
+    180: {
+        icon: <RetweetOutlined className='cvat-object-item-menu-orientation-icon' />,
+        label: '180°',
+    },
+};
 
 function CreateURLItem(props: ItemProps): JSX.Element {
     const { toolProps } = props;
@@ -196,6 +213,34 @@ function SwitchOrientationItem(props: ItemProps): JSX.Element {
             className='cvat-object-item-menu-switch-orientation'
         >
             Switch orientation
+        </Button>
+    );
+}
+
+function ChangeOrientationItem(props: ItemProps & { degrees: OrientationAngle }): JSX.Element {
+    const { toolProps, degrees } = props;
+    const { changeOrientation } = toolProps;
+    const { icon, label } = ORIENTATION_OPTIONS[degrees];
+    return (
+        <Button
+            type='link'
+            icon={icon}
+            onClick={(): void => changeOrientation(degrees)}
+            className={`cvat-object-item-menu-orientation-${degrees}`}
+        >
+            {label}
+        </Button>
+    );
+}
+
+function OrientationItem(): JSX.Element {
+    return (
+        <Button
+            type='link'
+            icon={<RetweetOutlined />}
+            className='cvat-object-item-menu-orientation'
+        >
+            Orientation
         </Button>
     );
 }
@@ -360,6 +405,7 @@ export default function ItemMenu(props: Props): MenuProps {
         COPY = 'copy',
         PROPAGATE = 'propagate',
         SWITCH_ORIENTATION = 'switch_orientation',
+        ORIENTATION = 'orientation',
         RESET_PERSPECTIVE = 'reset_perspective',
         TO_BACKGROUND = 'to_background',
         TO_FOREGROUND = 'to_foreground',
@@ -432,6 +478,18 @@ export default function ItemMenu(props: Props): MenuProps {
         items.push({
             key: MenuKeys.SWITCH_ORIENTATION,
             label: <SwitchOrientationItem toolProps={props} />,
+        });
+    }
+
+    if (is2D && !locked && [ShapeType.RECTANGLE, ShapeType.ELLIPSE].includes(shapeType)) {
+        items.push({
+            key: MenuKeys.ORIENTATION,
+            label: <OrientationItem />,
+            popupClassName: 'cvat-object-item-menu',
+            children: ([90, -90, 180] as const).map((degrees: OrientationAngle) => ({
+                key: `${MenuKeys.ORIENTATION}_${degrees}`,
+                label: <ChangeOrientationItem toolProps={props} degrees={degrees} />,
+            })),
         });
     }
 

@@ -6,6 +6,9 @@ weight: 1
 description: 'Instructions for deploying CVAT on a Kubernetes cluster.'
 aliases:
 - /docs/administration/advanced/k8s_deployment_with_helm/
+products:
+  - community
+  - enterprise
 ---
 
 ---
@@ -154,6 +157,30 @@ Before starting, ensure that the following prerequisites are met:
 
 ### Analytics
 Analytics is enabled by default, to disable set `analytics.enabled: false` in your `values.override.yaml`
+
+### Connecting to private cloud storage endpoints
+
+CVAT uses [Smokescreen](https://github.com/stripe/smokescreen) as an
+outbound request proxy for backend requests.
+If you attach an S3-compatible cloud storage, such as MinIO, and its endpoint
+resolves to a private or otherwise restricted IP address, CVAT can fail to
+connect with an error similar to:
+
+```text
+Failed to connect to proxy URL: "http://localhost:4750"
+```
+
+Allow the specific trusted storage IP address in `values.override.yaml`:
+
+```yaml
+smokescreen:
+  opts: '--allow-address=<storage_endpoint_ip>'
+```
+
+This value is applied to CVAT backend pods through the shared backend
+environment. If you use custom manifests, make sure the same Smokescreen
+option is set for every backend pod that can create, validate, import from,
+export to, or read data from cloud storage.
 
 ## Deployment
 
@@ -349,6 +376,10 @@ kubectl delete deployments --namespace=foo -l app=cvat-app
 It is assumed that you have created a PersistentVolumeClaim named `my-claim-name`
 and a PersistentVolume that backing the claim.
 Claims must exist in the same namespace as the Pod using the claim.
+The same claim can be mounted concurrently by several CVAT backend Pods. If these
+Pods can be scheduled on different nodes, the backing volume must support the
+`ReadWriteMany` (RWX) access mode. `ReadWriteOnce` (RWO) can be used only when all
+Pods using the claim are scheduled on the same node.
 For details [see](https://kubernetes.io/docs/concepts/storage/persistent-volumes).
 Add these values in the `values.override.yaml`:
 ```yaml

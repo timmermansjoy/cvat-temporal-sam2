@@ -2,27 +2,71 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useCallback, useState } from 'react';
+import React, {
+    useCallback, useEffect, useState,
+} from 'react';
 import Select from 'antd/lib/select';
 import Collapse from 'antd/lib/collapse';
 import Radio from 'antd/lib/radio';
 import Checkbox from 'antd/lib/checkbox';
 import InputNumber from 'antd/lib/input-number';
-import Input from 'antd/lib/input';
-import Popover from 'antd/lib/popover';
-import { EditOutlined } from '@ant-design/icons';
+import TextArea from 'antd/lib/input/TextArea';
 
 import { AudioIntervalState, Label, Attribute } from 'cvat-core-wrapper';
 import { clamp } from 'utils/math';
-import { formatTimeShort, formatMilliseconds } from 'audio/utils/format-audio-time';
+import { ColorBy } from 'reducers';
+import { AudioIntervalActionShortcuts } from './audio-interval-actions';
+import AudioIntervalHeader from './audio-interval-header';
 
 interface AudioRegionDetailsProps {
     interval: AudioIntervalState;
     intervalIndex: number;
     labels: Label[];
-    trackDurationSeconds: number;
     onChangeLabel(labelId: number): void;
     onChangeAttribute(attrID: number, value: string): void;
+    colorBy: ColorBy;
+    regionColor: string;
+    intervalActionShortcuts: AudioIntervalActionShortcuts;
+}
+
+function TextAttributeInput({
+    attributeID, value, disabled, onChange,
+}: {
+    attributeID: number;
+    value: string;
+    disabled: boolean;
+    onChange(attrID: number, value: string): void;
+}): JSX.Element {
+    // Using local value prevents the value to be replaced in the text area on every keystroke
+    // It helps keeping the caret position as well as working system shortcuts like undo/redo
+    const [localValue, setLocalValue] = useState(value);
+
+    // Keep the draft in sync with changes initiated outside this editor, e.g. undo/redo command.
+    useEffect(() => {
+        if (value !== localValue) {
+            setLocalValue(value);
+        }
+    }, [value]);
+
+    // Update after the local state change to avoid interrupting IME composition.
+    // (wrap to internal use effect to avoid issues e.g. with chinese keyboard)
+    useEffect(() => {
+        if (localValue !== value) {
+            onChange(attributeID, localValue);
+        }
+    }, [localValue]);
+
+    return (
+        <TextArea
+            rows={4}
+            size='small'
+            value={localValue}
+            disabled={disabled}
+            onChange={(event) => {
+                setLocalValue(event.target.value);
+            }}
+        />
+    );
 }
 
 function AttributeInput({
@@ -97,85 +141,12 @@ function AttributeInput({
     }
 
     return (
-        <Input.TextArea
-            rows={4}
-            size='small'
+        <TextAttributeInput
+            attributeID={attribute.id!}
             value={value}
             disabled={disabled}
-            onChange={(e) => onChange(attribute.id!, e.target.value)}
+            onChange={onChange}
         />
-    );
-}
-
-function LabelSelectorTrigger({
-    labels, activeLabel, isReadonly, onChangeLabel,
-}: {
-    labels: Label[];
-    activeLabel: Label | null | undefined;
-    isReadonly: boolean;
-    onChangeLabel(labelId: number): void;
-}): JSX.Element {
-    const [open, setOpen] = useState(false);
-
-    const popoverContent = (
-        <div className='cvat-audio-region-label-popover-content'>
-            {labels.map((label) => (
-                <div
-                    key={label.id}
-                    role='button'
-                    tabIndex={0}
-                    className={`cvat-audio-region-label-option${
-                        label.id === activeLabel?.id ? ' cvat-audio-region-label-option--active' : ''
-                    }`}
-                    onClick={() => {
-                        if (label.id != null) {
-                            onChangeLabel(label.id);
-                            setOpen(false);
-                        }
-                    }}
-                    onKeyDown={(e) => {
-                        if ((e.key === 'Enter' || e.key === ' ') && label.id != null) {
-                            onChangeLabel(label.id);
-                            setOpen(false);
-                        }
-                    }}
-                >
-                    <span
-                        className='cvat-audio-region-label-option-color'
-                        style={{ backgroundColor: label.color || '#9CA3AF' }}
-                    />
-                    <span className='cvat-audio-region-label-option-name'>{label.name}</span>
-                </div>
-            ))}
-        </div>
-    );
-
-    return (
-        <Popover
-            content={popoverContent}
-            trigger='click'
-            placement='bottomLeft'
-            open={!isReadonly && open}
-            onOpenChange={(visible) => !isReadonly && setOpen(visible)}
-            overlayClassName='cvat-audio-region-label-popover'
-        >
-            <div
-                className='cvat-audio-region-label-trigger'
-                role='button'
-                tabIndex={0}
-            >
-                <span
-                    className='cvat-audio-region-label-color'
-                    style={{ backgroundColor: activeLabel?.color || '#9CA3AF' }}
-                />
-                <span className='cvat-audio-region-label-trigger-name'>
-                    {activeLabel?.name || 'No label'}
-                </span>
-                {!isReadonly && (
-                    <EditOutlined className='cvat-audio-region-label-edit-icon' />
-                )}
-            </div>
-        </Popover>
     );
 }
 
@@ -184,25 +155,20 @@ function AudioRegionDetails(props: AudioRegionDetailsProps): JSX.Element {
         interval,
         intervalIndex,
         labels,
-        trackDurationSeconds,
         onChangeLabel,
         onChangeAttribute,
+        colorBy,
+        regionColor,
+        intervalActionShortcuts,
     } = props;
 
-    const activeLabel = interval.label.id != null ?
-        labels.find((l) => l.id === interval.label.id) : null;
-
     const isReadonly = !!interval.lock;
-    const startMs = interval.start;
-    const endMs = interval.stop ?? (trackDurationSeconds ? trackDurationSeconds * 1000 : interval.start);
-    const durationMs = Math.max(0, endMs - startMs);
-    const startSeconds = startMs / 1000;
-    const endSeconds = endMs / 1000;
 
     const handleChangeAttribute = useCallback((attrID: number, value: string) => {
         onChangeAttribute(attrID, value);
     }, [onChangeAttribute]);
 
+    const activeLabel = interval.label.id != null ? labels.find((label) => label.id === interval.label.id) : null;
     const attributes: Attribute[] = activeLabel?.attributes ?? [];
 
     const [expandedByRegion, setExpandedByRegion] = useState<Record<string, string[]>>({});
@@ -214,36 +180,31 @@ function AudioRegionDetails(props: AudioRegionDetailsProps): JSX.Element {
         const arr = Array.isArray(next) ? next : [next];
         setExpandedByRegion((prev) => ({ ...prev, [expandedKey]: arr }));
     }, [expandedKey]);
-
     return (
-        <div className='cvat-audio-region-details'>
-            <div className='cvat-audio-region-details-header'>
-                <span className='cvat-audio-region-details-index'>
-                    {intervalIndex + 1}
-                </span>
-                {labels.length > 0 && (
-                    <LabelSelectorTrigger
-                        labels={labels}
-                        activeLabel={activeLabel}
-                        isReadonly={isReadonly}
-                        onChangeLabel={onChangeLabel}
-                    />
-                )}
-                {interval.source && (
-                    <span
-                        className='cvat-audio-region-details-source'
-                        title={`Source: ${interval.source}`}
-                    >
-                        {interval.source}
-                    </span>
-                )}
-                <span className='cvat-audio-region-details-time-range'>
-                    {`${formatTimeShort(startSeconds)} \u2013 ${formatTimeShort(endSeconds)}`}
-                </span>
-                <span className='cvat-audio-region-details-duration'>
-                    {`(${formatMilliseconds(durationMs)})`}
-                </span>
-            </div>
+        <div
+            className='cvat-audio-region-details'
+            style={{ '--region-item-color': regionColor } as React.CSSProperties}
+        >
+            <AudioIntervalHeader
+                clientID={interval.clientID as number}
+                serverID={interval.serverID}
+                labelID={interval.label.id ?? null}
+                labelType={interval.label.type}
+                start={interval.start}
+                stop={interval.stop}
+                source={interval.source}
+                color={interval.color}
+                locked={isReadonly}
+                pinned={interval.pinned}
+                hidden={interval.hidden}
+                intervalIndex={intervalIndex}
+                labels={labels}
+                showSource
+                colorBy={colorBy}
+                shortcuts={intervalActionShortcuts}
+                isCompact={false}
+                onChangeLabel={onChangeLabel}
+            />
 
             <div className='cvat-audio-region-details-content'>
                 {attributes.length > 0 && (

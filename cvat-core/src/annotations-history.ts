@@ -10,18 +10,59 @@ const MAX_HISTORY_LENGTH = 32;
 interface ActionItem {
     action: HistoryActions;
     clientIds: number[];
-    frame: number;
-    undo: () => void;
-    redo: () => void;
+    frame: number | null;
+    undo: () => void | Promise<void>;
+    redo: () => void | Promise<void>;
+}
+
+class HistoryTransaction implements ActionItem {
+    public action: HistoryActions;
+    public frame: number | null = null;
+    private actions: ActionItem[] = [];
+
+    constructor(action: HistoryActions) {
+        this.action = action;
+    }
+
+    public get clientIds(): number[] {
+        return [...new Set(this.actions.flatMap((action) => action.clientIds))];
+    }
+
+    public get empty(): boolean {
+        return !this.actions.length;
+    }
+
+    public add(action: ActionItem): void {
+        if (!this.actions.length) {
+            this.frame = action.frame;
+        } else if (this.frame !== action.frame) {
+            throw new Error('All history actions in a transaction must target the same frame');
+        }
+        this.actions.push(action);
+    }
+
+    public async undo(): Promise<void> {
+        for (let index = this.actions.length - 1; index >= 0; index--) {
+            await this.actions[index].undo();
+        }
+    }
+
+    public async redo(): Promise<void> {
+        for (const action of this.actions) {
+            await action.redo();
+        }
+    }
 }
 
 export default class AnnotationHistory {
     private frozen: boolean;
     private _undo: ActionItem[];
     private _redo: ActionItem[];
+    private transaction: HistoryTransaction | null;
 
     constructor() {
         this.frozen = false;
+        this.transaction = null;
         this.clear();
     }
 
@@ -41,8 +82,8 @@ export default class AnnotationHistory {
 
     public do(
         action: HistoryActions,
-        undo: () => void,
-        redo: () => void,
+        undo: () => void | Promise<void>,
+        redo: () => void | Promise<void>,
         clientIds: number[],
         frame: number | null,
     ): void {
@@ -56,9 +97,37 @@ export default class AnnotationHistory {
             frame,
         };
 
+        if (this.transaction) {
+            this.transaction.add(actionItem);
+            return;
+        }
+
         this._undo = this._undo.slice(-MAX_HISTORY_LENGTH + 1);
         this._undo.push(actionItem);
         this._redo = [];
+    }
+
+    public beginTransaction(action: HistoryActions): boolean {
+        if (this.transaction) return false;
+
+        this.transaction = new HistoryTransaction(action);
+        return true;
+    }
+
+    public endTransaction(): void {
+        const { transaction } = this;
+        this.transaction = null;
+        if (!transaction || transaction.empty) return;
+
+        this._undo = this._undo.slice(-MAX_HISTORY_LENGTH + 1);
+        this._undo.push(transaction);
+        this._redo = [];
+    }
+
+    public async abortTransaction(): Promise<void> {
+        const { transaction } = this;
+        this.transaction = null;
+        await transaction?.undo();
     }
 
     public async undo(count: number): Promise<number[]> {

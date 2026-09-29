@@ -8,6 +8,7 @@ import { Col, Row } from 'antd/lib/grid';
 import { Workspace } from 'reducers';
 import { Job } from 'cvat-core-wrapper';
 import { KeyMap } from 'utils/mousetrap-react';
+import type { AudioSeekRequest } from 'actions/audio-actions';
 
 import AudioLeftGroup from './audio-left-group';
 import AudioPlayerNavigation from './audio-player-navigation';
@@ -21,11 +22,14 @@ interface Props {
     workspace: Workspace;
     undoShortcut: string;
     redoShortcut: string;
+    playPauseShortcut: string;
+    backwardShortcut: string;
+    forwardShortcut: string;
+    fastBackwardShortcut: string;
+    fastForwardShortcut: string;
     keyMap: KeyMap;
     jobInstance: Job;
-    audioCurrentTime: number;
     audioDuration: number;
-    audioZoom: number;
     annotationFilters: object[];
     initialOpenGuide: boolean;
     changeWorkspace(workspace: Workspace): void;
@@ -34,7 +38,7 @@ interface Props {
     onUndoClick(): void;
     onRedoClick(): void;
     onAudioPlayPause(): void;
-    onAudioSeek(time: number): void;
+    onAudioSeek(request: AudioSeekRequest): void;
 }
 
 export default function AudioTopBarComponent(props: Props): JSX.Element {
@@ -46,11 +50,14 @@ export default function AudioTopBarComponent(props: Props): JSX.Element {
         workspace,
         undoShortcut,
         redoShortcut,
+        playPauseShortcut,
+        backwardShortcut,
+        forwardShortcut,
+        fastBackwardShortcut,
+        fastForwardShortcut,
         jobInstance,
         keyMap,
-        audioCurrentTime,
         audioDuration,
-        audioZoom,
         annotationFilters,
         initialOpenGuide,
         showStatistics,
@@ -78,11 +85,14 @@ export default function AudioTopBarComponent(props: Props): JSX.Element {
                 <Row align='middle'>
                     <AudioPlayerNavigation
                         playing={playing}
-                        currentTime={audioCurrentTime}
                         duration={audioDuration}
-                        zoom={audioZoom}
                         workspace={workspace}
                         keyMap={keyMap}
+                        playPauseShortcut={playPauseShortcut}
+                        backwardShortcut={backwardShortcut}
+                        forwardShortcut={forwardShortcut}
+                        fastBackwardShortcut={fastBackwardShortcut}
+                        fastForwardShortcut={fastForwardShortcut}
                         onPlayPause={onAudioPlayPause}
                         onSeek={onAudioSeek}
                     />

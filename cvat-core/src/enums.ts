@@ -142,6 +142,7 @@ export enum EventScope {
 }
 
 export enum HistoryActions {
+    CHANGED_OBJECTS = 'Changed objects',
     CHANGED_LABEL = 'Changed label',
     CHANGED_ATTRIBUTES = 'Changed attributes',
     CHANGED_POINTS = 'Changed points',
@@ -155,11 +156,14 @@ export enum HistoryActions {
     CHANGED_COLOR = 'Changed color',
     CHANGED_HIDDEN = 'Changed hidden',
     CHANGED_SOURCE = 'Changed source',
+    CHANGED_SKELETON = 'Changed skeleton',
     CHANGED_AUDIO_POSITION = 'Changed audio position',
+    CHANGED_AUDIO_INTERVALS = 'Changed audio intervals',
     MERGED_OBJECTS = 'Merged objects',
     JOINED_OBJECTS = 'Joined objects',
     SLICED_OBJECT = 'Sliced object',
     SPLITTED_TRACK = 'Splitted track',
+    SPLIT_INTERVAL = 'Split interval',
     GROUPED_OBJECTS = 'Grouped objects',
     CREATED_OBJECTS = 'Created objects',
     REMOVED_OBJECT = 'Removed object',
@@ -274,6 +278,7 @@ export enum LabelType {
     POINTS = 'points',
     ELLIPSE = 'ellipse',
     CUBOID = 'cuboid',
+    INTERVAL = 'interval',
     SKELETON = 'skeleton',
     MASK = 'mask',
     TAG = 'tag',

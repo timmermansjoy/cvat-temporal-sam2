@@ -12,7 +12,7 @@ import message from 'antd/lib/message';
 import { CombinedState } from 'reducers';
 import {
     audioActions,
-    updateAudioIntervalAsync,
+    changeAudioIntervalLabelAsync,
     updateAudioIntervalsAsync,
 } from 'actions/audio-actions';
 import LabelItemComponent from 'components/annotation-page/standard-workspace/objects-side-bar/label-item';
@@ -23,6 +23,8 @@ import { registerComponentShortcuts } from 'actions/shortcuts-actions';
 import { subKeyMap } from 'utils/component-subkeymap';
 import { useResetShortcutsOnUnmount } from 'utils/hooks';
 import { getCVATStore } from 'cvat-store';
+import { LabelType } from 'cvat-core-wrapper';
+import { filterApplicableForType } from 'utils/filter-applicable-labels';
 
 const componentShortcuts: Record<string, KeyMapItem> = {};
 
@@ -126,12 +128,16 @@ function AudioLabelsList(): JSX.Element {
     }), shallowEqual);
 
     const labelIDs = useMemo(() => labels.map((label: any): number => label.id), [labels]);
+    const applicableLabelIDs = useMemo(
+        () => filterApplicableForType(LabelType.INTERVAL, labels).map((label) => label.id!),
+        [labels],
+    );
 
     useResetShortcutsOnUnmount(componentShortcuts);
 
     const keyToLabelMapping = useMemo(() => Object.fromEntries(
-        labelIDs.slice(0, 10).map((labelID: number, idx: number) => [(idx + 1) % 10, labelID]),
-    ), [labelIDs]);
+        applicableLabelIDs.slice(0, 10).map((labelID: number, idx: number) => [(idx + 1) % 10, labelID]),
+    ), [applicableLabelIDs]);
 
     useEffect(() => {
         const updated = JSON.parse(JSON.stringify(componentShortcuts));
@@ -161,14 +167,7 @@ function AudioLabelsList(): JSX.Element {
         const { activeIntervalID } = relevantAppState.audio.player;
 
         if (activeIntervalID !== null) {
-            const defaultAttrs: Record<number, string> = {};
-            label.attributes.forEach((attr: any) => {
-                defaultAttrs[attr.id] = attr.defaultValue;
-            });
-            dispatch(updateAudioIntervalAsync(activeIntervalID, {
-                label,
-                attributes: defaultAttrs,
-            }));
+            dispatch(changeAudioIntervalLabelAsync(activeIntervalID, labelID));
         } else {
             dispatch(audioActions.setAudioActiveLabel(labelID));
             message.destroy();

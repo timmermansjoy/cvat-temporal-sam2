@@ -7,12 +7,11 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 import django_rq
-from django.conf import settings
 from django.db.models import Model
-from django_rq.queues import DjangoRQ, DjangoScheduler
+from django_rq.queues import DjangoRQ
 from rest_framework import status
 from rest_framework.response import Response
-from rq import Callback
+from rq import Callback, Retry
 from rq.job import Job as RQJob
 from rq.job import JobStatus as RQJobStatus
 
@@ -21,6 +20,7 @@ from cvat.apps.engine.models import RequestTarget
 from cvat.apps.engine.rq import BaseRQMeta, define_dependent_job
 from cvat.apps.engine.types import ExtendedRequest
 from cvat.apps.engine.utils import get_rq_lock_by_user, get_rq_lock_for_job
+from cvat.apps.redis_handler import utils
 from cvat.apps.redis_handler.serializers import RqIdSerializer
 
 slogger = ServerLogManager(__name__)
@@ -42,6 +42,8 @@ class AbstractRequestManager(metaclass=ABCMeta):
 
     job_on_success_callback: Callback | None
     job_on_failure_callback: Callback | None
+
+    rq_meta_cls: ClassVar[type[BaseRQMeta]] = BaseRQMeta
 
     def __init__(
         self,
@@ -78,6 +80,13 @@ class AbstractRequestManager(metaclass=ABCMeta):
         """
         return None
 
+    @property
+    def job_retry(self) -> Retry | None:
+        """
+        Retry policy for the job, if not set, the job will not be retried
+        """
+        return None
+
     @abstractmethod
     def build_request_id(self): ...
 
@@ -110,11 +119,16 @@ class AbstractRequestManager(metaclass=ABCMeta):
     def _set_default_callback_params(self):
         self.callback_args = None
         self.callback_kwargs = None
-        self.job_on_success_callback = None
-        self.job_on_failure_callback = None
 
     def init_job_callbacks(self) -> None:
-        """Hook to initialize RQ lifecycle callbacks for the job"""
+        self.job_on_success_callback = Callback(
+            utils.send_request_succeeded_signal,
+            timeout=60,
+        )
+        self.job_on_failure_callback = Callback(
+            utils.send_request_failed_signal,
+            timeout=60,
+        )
 
     def validate_request(self) -> Response | None:
         """Hook to run some validations before processing a request"""
@@ -130,29 +144,38 @@ class AbstractRequestManager(metaclass=ABCMeta):
 
         job_status = job.get_status(refresh=False)
 
-        if job_status in {
-            # FUTURE-TODO: cancelling and re-enqueuing a started job should probably be allowed
-            RQJobStatus.STARTED,
-            RQJobStatus.QUEUED,
-            RQJobStatus.DEFERRED,
-        }:
-            return Response(
-                RqIdSerializer({"rq_id": job.id}).data,
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        # RQ jobs can be scheduled only by CVAT internal logic, in that case job has no dependencies
-        if job_status == RQJobStatus.SCHEDULED:
-            scheduler: DjangoScheduler = django_rq.get_scheduler(queue.name, queue=queue)
-            # remove the job id from the set with scheduled keys
-            scheduler.cancel(job)
-            job.cancel(enqueue_dependents=settings.ONE_RUNNING_JOB_IN_QUEUE_PER_USER)
-
-        job.delete()
-        return None
+        match job_status:
+            case (
+                # FUTURE-TODO: cancelling and re-enqueuing a started job should probably be allowed
+                RQJobStatus.STARTED
+                | RQJobStatus.QUEUED
+                | RQJobStatus.DEFERRED
+                | RQJobStatus.SCHEDULED
+            ):
+                return Response(
+                    RqIdSerializer({"rq_id": job.id}).data,
+                    status=status.HTTP_409_CONFLICT,
+                )
+            case (
+                RQJobStatus.FINISHED
+                | RQJobStatus.FAILED
+                | RQJobStatus.CANCELED
+                | RQJobStatus.STOPPED
+            ):
+                # The request ID is reused as the RQ job ID, and RQ's enqueue just overwrites
+                # the existing job hash without dropping its result/failure TTL or registry entry.
+                # Delete the terminal job so the new one starts from a clean slate.
+                job.delete()
+                return None
+            case _:
+                raise ValueError(f"Unexpected RQ job status, got {job_status!r}")
 
     def build_meta(self, *, request_id: str) -> dict[str, Any]:
-        return BaseRQMeta.build(request=self.request, db_obj=self.db_instance)
+        return BaseRQMeta.build_from_instance(
+            request=self.request,
+            instance=self.db_instance,
+            request_manager_cls=type(self),
+        )
 
     def setup_new_job(self, queue: DjangoRQ, request_id: str, /, **kwargs):
         with get_rq_lock_by_user(queue, self.user_id):
@@ -165,6 +188,7 @@ class AbstractRequestManager(metaclass=ABCMeta):
                 depends_on=define_dependent_job(queue, self.user_id, rq_id=request_id),
                 result_ttl=self.job_result_ttl,
                 failure_ttl=self.job_failed_ttl,
+                retry=self.job_retry,
                 on_success=self.job_on_success_callback,
                 on_failure=self.job_on_failure_callback,
                 **kwargs,

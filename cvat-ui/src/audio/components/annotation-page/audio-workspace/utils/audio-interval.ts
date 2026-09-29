@@ -4,6 +4,16 @@
 
 import { AudioIntervalState } from 'cvat-core-wrapper';
 import { toClipboard } from 'utils/to-clipboard';
+import { clamp } from 'utils/math';
+
+export interface AudioTimeRange {
+    start: number;
+    end: number;
+}
+
+export interface AudioPlaybackRange extends AudioTimeRange {
+    id: object;
+}
 
 export function intervalID(interval: AudioIntervalState): number {
     return interval.clientID as number;
@@ -18,15 +28,15 @@ export function clientIDFromWaveRegionId(id: string): number | null {
     return Number.isInteger(clientID) ? clientID : null;
 }
 
-export function intervalStartSeconds(interval: AudioIntervalState): number {
+export function intervalStartSeconds(interval: Pick<AudioIntervalState, 'start' | 'stop'>): number {
     return interval.start / 1000;
 }
 
-export function intervalEndSeconds(interval: AudioIntervalState): number {
+export function intervalEndSeconds(interval: Pick<AudioIntervalState, 'start' | 'stop'>): number {
     return (interval.stop ?? interval.start) / 1000;
 }
 
-export function intervalDurationSeconds(interval: AudioIntervalState): number {
+export function intervalDurationSeconds(interval: Pick<AudioIntervalState, 'start' | 'stop'>): number {
     return Math.max(0, intervalEndSeconds(interval) - intervalStartSeconds(interval));
 }
 
@@ -35,4 +45,12 @@ export function copyAudioIntervalURL(serverID?: number | null): void {
         const { origin, pathname } = window.location;
         toClipboard(`${origin}${pathname}?type=interval&serverID=${serverID}`);
     }
+}
+
+export function clampRange(range: AudioTimeRange, duration: number): AudioTimeRange {
+    const start = clamp(range.start, 0, duration);
+    return {
+        start,
+        end: clamp(range.end, start, duration),
+    };
 }

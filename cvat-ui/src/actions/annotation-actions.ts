@@ -8,7 +8,7 @@ import { ThunkAction, ThunkDispatch } from 'utils/redux';
 import isAbleToChangeFrame from 'utils/is-able-to-change-frame';
 import { CanvasMode as Canvas3DMode } from 'cvat-canvas3d-wrapper';
 import {
-    RectDrawingMethod, CuboidDrawingMethod, Canvas, CanvasMode as Canvas2DMode,
+    RectDrawingMethod, CuboidDrawingMethod, Canvas, CanvasMode as Canvas2DMode, CanvasHistorySource,
 } from 'cvat-canvas-wrapper';
 import {
     getCore, MLModel, JobType, Job, QualityConflict,
@@ -17,6 +17,7 @@ import {
 } from 'cvat-core-wrapper';
 import logger, { EventScope } from 'cvat-logger';
 import { getCVATStore } from 'cvat-store';
+import changeObjectOrientation from 'utils/change-object-orientation';
 
 import {
     ActiveControl,
@@ -139,6 +140,7 @@ export enum AnnotationActionTypes {
     REMOVE_JOB_ANNOTATIONS_SUCCESS = 'REMOVE_JOB_ANNOTATIONS_SUCCESS',
     REMOVE_JOB_ANNOTATIONS_FAILED = 'REMOVE_JOB_ANNOTATIONS_FAILED',
     UPDATE_CANVAS_CONTEXT_MENU = 'UPDATE_CANVAS_CONTEXT_MENU',
+    UPDATE_CANVAS_HISTORY = 'UPDATE_CANVAS_HISTORY',
     UNDO_ACTION_FAILED = 'UNDO_ACTION_FAILED',
     REDO_ACTION_FAILED = 'REDO_ACTION_FAILED',
     CHANGE_ANNOTATIONS_FILTERS = 'CHANGE_ANNOTATIONS_FILTERS',
@@ -147,6 +149,8 @@ export enum AnnotationActionTypes {
     FETCH_ANNOTATIONS_FAILED = 'FETCH_ANNOTATIONS_FAILED',
     ROTATE_FRAME = 'ROTATE_FRAME',
     SWITCH_Z_LAYER = 'SWITCH_Z_LAYER',
+    SHOW_Z_LAYERS = 'SHOW_Z_LAYERS',
+    TOGGLE_Z_LAYERS_VISIBILITY = 'TOGGLE_Z_LAYERS_VISIBILITY',
     SEARCH_ANNOTATIONS_FAILED = 'SEARCH_ANNOTATIONS_FAILED',
     SEARCH_CHAPTERS_FAILED = 'SEARCH_CHAPTERS_FAILED',
     CHANGE_WORKSPACE = 'CHANGE_WORKSPACE',
@@ -230,11 +234,29 @@ export function canvasErrorOccurred(error: Error): AnyAction {
     };
 }
 
+export function toggleZLayersVisibility(zOrders: number[]): AnyAction {
+    return {
+        type: AnnotationActionTypes.TOGGLE_Z_LAYERS_VISIBILITY,
+        payload: {
+            zOrders,
+        },
+    };
+}
+
 export function switchZLayer(cur: number): AnyAction {
     return {
         type: AnnotationActionTypes.SWITCH_Z_LAYER,
         payload: {
             cur,
+        },
+    };
+}
+
+export function showZLayers(zOrders: number[]): AnyAction {
+    return {
+        type: AnnotationActionTypes.SHOW_Z_LAYERS,
+        payload: {
+            zOrders,
         },
     };
 }
@@ -400,6 +422,17 @@ export function updateCanvasContextMenu(
             type,
             pointID,
         },
+    };
+}
+
+export function updateCanvasHistory(
+    source: CanvasHistorySource,
+    undoAction?: string,
+    redoAction?: string,
+): AnyAction {
+    return {
+        type: AnnotationActionTypes.UPDATE_CANVAS_HISTORY,
+        payload: { source, undoAction, redoAction },
     };
 }
 
@@ -984,6 +1017,7 @@ export function getJobAsync({
         initialWorkspace: Workspace | null;
         defaultLabel: string | null;
         defaultPointsCount: number | null;
+        defaultRotated: boolean;
     }
 }): ThunkAction {
     return async (dispatch: ThunkDispatch, getState): Promise<void> => {
@@ -1233,7 +1267,7 @@ async function updateObjectsLayers(
     }
 }
 
-export function updateAnnotationsAsync(statesToUpdate: ObjectState[]): ThunkAction {
+export function updateAnnotationsAsync(statesToUpdate: ObjectState[], batch = false): ThunkAction {
     return async (dispatch: ThunkDispatch): Promise<void> => {
         const { jobInstance, workspace } = receiveAnnotationsParameters();
         try {
@@ -1244,6 +1278,12 @@ export function updateAnnotationsAsync(statesToUpdate: ObjectState[]): ThunkActi
 
             const statesToSave = statesToUpdate.filter((objectState) => !objectState.isGroundTruth);
             if (!statesToSave.length) {
+                return;
+            }
+
+            if (batch) {
+                await jobInstance.annotations.saveStates(statesToSave);
+                dispatch(fetchAnnotationsAsync());
                 return;
             }
 
@@ -1269,6 +1309,30 @@ export function updateAnnotationsAsync(statesToUpdate: ObjectState[]): ThunkActi
             });
             dispatch(fetchAnnotationsAsync());
         }
+    };
+}
+
+export function rotateActiveObjectOrFrame(rotation: Rotation): ThunkAction {
+    return async (dispatch: ThunkDispatch): Promise<void> => {
+        const state: CombinedState = getStore().getState();
+        const {
+            annotation: {
+                annotations: { activatedStateID, states },
+            },
+        } = state;
+
+        const activatedState = states.find((objectState) => objectState.clientID === activatedStateID);
+        const degrees = rotation === Rotation.CLOCKWISE90 ? 90 : -90;
+
+        if (activatedState) {
+            if (!activatedState.isGroundTruth && !activatedState.lock &&
+                changeObjectOrientation(activatedState, degrees)) {
+                dispatch(updateAnnotationsAsync([activatedState]));
+            }
+            return;
+        }
+
+        dispatch(rotateCurrentFrame(rotation));
     };
 }
 
@@ -1315,17 +1379,24 @@ export function changeWorkspaceAsync(workspace: Workspace): ThunkAction {
 export function createAnnotationsAsync(
     statesToCreate: (ObjectState | AudioIntervalState)[],
     source: AnnotationSource = AnnotationSource.OTHER,
-): ThunkAction {
-    return async (dispatch: ThunkDispatch): Promise<void> => {
+): ThunkAction<Promise<number[]>> {
+    return async (dispatch: ThunkDispatch): Promise<number[]> => {
         try {
             const { jobInstance } = receiveAnnotationsParameters();
             const clientIds = await jobInstance.annotations.put(statesToCreate);
+            // Reveal layers after creation so newly created objects are immediately visible.
+            const createdZLayers = Array.from(new Set(statesToCreate.flatMap((state) => (
+                'zOrder' in state && typeof state.zOrder === 'number' ? [state.zOrder] : []
+            ))));
+            dispatch(showZLayers(createdZLayers));
             await dispatch(fetchAnnotationsAsync());
 
             if (source === AnnotationSource.DRAW_SIMPLIFIED_POLY && statesToCreate.length === 1) {
                 const [clientId] = clientIds;
                 dispatch(switchSimplifyVisibility(clientId));
             }
+
+            return clientIds;
         } catch (error) {
             dispatch({
                 type: AnnotationActionTypes.CREATE_ANNOTATIONS_FAILED,
@@ -1333,6 +1404,7 @@ export function createAnnotationsAsync(
                     error,
                 },
             });
+            return [];
         }
     };
 }
@@ -1700,6 +1772,7 @@ export function redrawShapeAsync(): ThunkAction {
         const {
             annotations: { activatedStateID, states },
             canvas: { instance: canvasInstance },
+            drawing: { activeRectDrawingMethod },
         } = getStore().getState().annotation;
 
         if (activatedStateID !== null) {
@@ -1722,6 +1795,7 @@ export function redrawShapeAsync(): ThunkAction {
                     enabled: true,
                     redraw: activatedStateID,
                     shapeType: state.shapeType,
+                    rectDrawingMethod: activeRectDrawingMethod,
                     crosshair: [ShapeType.RECTANGLE, ShapeType.CUBOID, ShapeType.ELLIPSE].includes(state.shapeType),
                 });
             }
@@ -1831,7 +1905,7 @@ export function restoreFrameAsync(frame: number): ThunkAction {
     };
 }
 
-export function changeHideActiveObjectAsync(hide: boolean): ThunkAction {
+export function changeHideActiveObjectAsync(hide: boolean, save = true): ThunkAction {
     return async (dispatch: ThunkDispatch, getState): Promise<void> => {
         const state = getState();
         const { instance: canvas } = state.annotation.canvas;
@@ -1841,7 +1915,7 @@ export function changeHideActiveObjectAsync(hide: boolean): ThunkAction {
             });
 
             const { objectState } = state.annotation.editing;
-            if (objectState) {
+            if (objectState && save) {
                 objectState.hidden = hide;
                 await dispatch(updateAnnotationsAsync([objectState]));
             }

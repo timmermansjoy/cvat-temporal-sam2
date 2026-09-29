@@ -133,6 +133,25 @@ function buildDuplicatedAPI(prototype): void {
                     return result;
                 },
 
+                async splitInterval(state, position) {
+                    const result = await PluginRegistry.apiWrapper.call(
+                        this,
+                        prototype.annotations.splitInterval,
+                        state,
+                        position,
+                    );
+                    return result;
+                },
+
+                async saveStates(states) {
+                    const result = await PluginRegistry.apiWrapper.call(
+                        this,
+                        prototype.annotations.saveStates,
+                        states,
+                    );
+                    return result;
+                },
+
                 async merge(objectStates) {
                     const result = await PluginRegistry.apiWrapper.call(
                         this,
@@ -448,6 +467,8 @@ export class Session {
             state: AudioIntervalState | null,
             distance: number | null,
         }>;
+        splitInterval: (state: AudioIntervalState, position: number) => Promise<number | null>;
+        saveStates: (states: (ObjectState | AudioIntervalState)[]) => Promise<void>;
         import: (data: SerializedCollection) => Promise<void>;
         export: () => Promise<SerializedCollection>;
         commit: (
@@ -532,6 +553,8 @@ export class Session {
             upload: Object.getPrototypeOf(this).annotations.upload.bind(this),
             select: Object.getPrototypeOf(this).annotations.select.bind(this),
             selectInterval: Object.getPrototypeOf(this).annotations.selectInterval.bind(this),
+            splitInterval: Object.getPrototypeOf(this).annotations.splitInterval.bind(this),
+            saveStates: Object.getPrototypeOf(this).annotations.saveStates.bind(this),
             import: Object.getPrototypeOf(this).annotations.import.bind(this),
             export: Object.getPrototypeOf(this).annotations.export.bind(this),
             commit: Object.getPrototypeOf(this).annotations.commit.bind(this),
